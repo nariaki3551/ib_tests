@@ -897,6 +897,8 @@ static int post_send(ib_context_t *ctx, mcast_info_t *mcast_info, int len, int n
         } else {
             wrs[i].next = NULL;
         }
+
+	remaining -= current_len;
     }
 
     // Post batch send

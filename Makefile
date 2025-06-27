@@ -40,8 +40,10 @@ ib_rc_unicast_perf: ib_rc_unicast_perf.c
 	scp -P 12345 $@ tvm01:/app/ib_tests/
 	scp -P 12345 $@ tvm02:/app/ib_tests/
 
+test: run-mcast-quick run-ud_unicast-quick run-rc_unicast-quick
+
 # Run performance test with specific parameters
-run-mcast:
+run-mcast: ib_multicast_perf
 	mpirun \
 	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_0 -w 20 -i 100 \
 	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_1 -w 20 -i 100 \
@@ -54,7 +56,7 @@ run-mcast:
 	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_1 -w 20 -i 100 \
 	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_2 -w 20 -i 100
 
-run-mcast-quick:
+run-mcast-quick: ib_multicast_perf
 	# mpirun -np 2 ib_multicast_perf -d mlx5_0 -l 1048576 -u 1048576
 	# mpirun -np 2 ib_multicast_perf -d mlx5_0 -l 1024 -u 1024
 	mpirun \

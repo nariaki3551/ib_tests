@@ -22,15 +22,7 @@
 #define DEF_QKEY 0x1a1a1a1a
 #define GRH_HEADER_SIZE 40  // Global Routing Header size
 
-typedef struct {
-    int warmup_iterations;
-    int test_iterations;
-    int size_step;
-    int min_size;
-    int max_size;
-} perf_params_t;
-
-// ユニキャスト用peer情報構造体
+// peer info structure
 typedef struct {
     uint16_t lid;
     uint32_t qpn;
@@ -55,12 +47,27 @@ typedef struct {
     char *devname;
 } ib_context_t;
 
+// performance parameters structure
+typedef struct {
+    int warmup_iterations;
+    int test_iterations;
+    int size_step;
+    int min_size;
+    int max_size;
+} perf_params_t;
+
+// performance result structure
+typedef struct {
+    double send_time_usec;
+    double recv_time_usec;
+} perf_result_t;
+
 // Global variables
 static int mpi_rank;
 static int mpi_size;
-static const char TEST_DATA_VALUE = 3;  // テストデータの値
+static const char TEST_DATA_VALUE = 3;
 
-// ログレベル定義
+// Log level definition
 typedef enum {
     LOG_LEVEL_ERROR = 0,
     LOG_LEVEL_INFO = 1,
@@ -69,11 +76,11 @@ typedef enum {
 static log_level_t g_log_level = LOG_LEVEL_INFO;
 
 #define LOG_ERROR(fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_ERROR) fprintf(stderr, "\033[31mRank %d: " fmt " [%s:%d]\033[0m\n", mpi_rank, ##__VA_ARGS__, __func__, __LINE__); } while (0)
+    do { if (g_log_level >= LOG_LEVEL_ERROR) fprintf(stderr, "\033[31mRank %d: " fmt " [%s:%s:%d]\033[0m\n", mpi_rank, ##__VA_ARGS__, __FILE__, __func__, __LINE__); } while (0)
 #define LOG_INFO(fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_INFO) fprintf(stderr, "Rank %d: " fmt " [%s:%d]\n", mpi_rank, ##__VA_ARGS__, __func__, __LINE__); } while (0)
+    do { if (g_log_level >= LOG_LEVEL_INFO) fprintf(stderr, "\033[36mRank %d: " fmt " [%s:%s:%d]\033[0m\n", mpi_rank, ##__VA_ARGS__, __FILE__,__func__, __LINE__); } while (0)
 #define LOG_DEBUG(fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_DEBUG) fprintf(stderr, "Rank %d: " fmt " [%s:%d]\n", mpi_rank, ##__VA_ARGS__, __func__, __LINE__); } while (0)
+    do { if (g_log_level >= LOG_LEVEL_DEBUG) fprintf(stderr, "Rank %d: " fmt " [%s:%s:%d]\n", mpi_rank, ##__VA_ARGS__, __FILE__,__func__, __LINE__); } while (0)
 
 // Performance measurement functions
 static double get_time_usec(void)
@@ -99,13 +106,14 @@ static void print_performance_header(perf_params_t *perf_params)
         printf("Test iterations: %d\n", perf_params->test_iterations);
         printf("MPI ranks: %d\n", mpi_size);
         printf("\n");
-        printf("%-20s %-12s %-12s\n", 
-               "Size (bytes)", "Bandwidth (GB/s)", "Latency (usec)");
+        printf("%-20s %-12s %-12s %-12s %-12s\n", 
+               "Size (bytes)", "Send BW (GB/s)", "Recv BW (GB/s)", "Send Lat (us)", "Recv Lat (us)");
         printf("--------------------------------------------------------------------------------\n");
     }
 }
 
-static void print_performance_result(int size, double bandwidth_gbps, double latency_usec)
+static void print_performance_result(int size, double send_bandwidth_gbps, double recv_bandwidth_gbps, 
+                                   double send_latency_usec, double recv_latency_usec)
 {
     if (mpi_rank == 0) {
         char size_str[32];
@@ -119,26 +127,28 @@ static void print_performance_result(int size, double bandwidth_gbps, double lat
             snprintf(size_str, sizeof(size_str), "%d (%.0fG)", size, (double)size / (1024 * 1024 * 1024));
         }
         
-        printf("%-20s %-12.3f %-12.2f\n", 
-               size_str, bandwidth_gbps, latency_usec);
+        printf("%-20s %-12.3f %-12.3f %-12.2f %-12.2f\n", 
+               size_str, send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec);
     }
 }
 
-static double run_performance_test(ib_context_t *ctx, peer_info_t *peer, int size, perf_params_t *perf_params)
+static perf_result_t run_performance_test(ib_context_t *ctx, peer_info_t *peer, int size, perf_params_t *perf_params)
 {
-    double start_time = 0.0, end_time = 0.0, total_time = 0.0;
+    double start_time = 0.0, end_send_time = 0.0, end_recv_time = 0.0;
+    double total_send_time = 0.0, total_recv_time = 0.0;
     int chunk_size = ctx->mtu - GRH_HEADER_SIZE;
-    int num_chunks = (size + chunk_size - 1) / chunk_size;
+    int num_chunks = (size + chunk_size - 1) / chunk_size;  // ceil(size / chunk_size)
+    perf_result_t result = {0.0, 0.0};
 
-    // 送信データを定数で埋める
+    // set constant data to buffer
     if (mpi_rank == 0) {
         memset(ctx->buf, TEST_DATA_VALUE, size);
     }
 
     // Warmup phase
-    LOG_DEBUG("\033[1;36mWarmup phase\033[0m");
+    LOG_INFO("Warmup phase");
     for (int i = 0; i < perf_params->warmup_iterations; i++) {
-        LOG_DEBUG("\033[36mWarmup iteration start [%d/%d]\033[0m", i+1, perf_params->warmup_iterations);
+        LOG_INFO("Warmup iteration start [%d/%d]", i+1, perf_params->warmup_iterations);
         if (mpi_rank > 0) {
             post_recv(ctx, size, num_chunks);
         }
@@ -153,54 +163,58 @@ static double run_performance_test(ib_context_t *ctx, peer_info_t *peer, int siz
             memset(ctx->buf, 0, size);
         }
     }
-    LOG_DEBUG("Warmup completed");
 
-   
     // Measurement phase
-    LOG_DEBUG("\033[1;36mMeasurement phase\033[0m");
+    LOG_INFO("Measurement phase");
     for (int i = 0; i < perf_params->test_iterations; i++) {
-        LOG_DEBUG("\033[36mMeasurement iteration start [%d/%d]\033[0m", i+1, perf_params->test_iterations);
+        LOG_INFO("Measurement iteration start [%d/%d]", i+1, perf_params->test_iterations);
         if (mpi_rank > 0) {
             post_recv(ctx, size, num_chunks);
         }
         MPI_Barrier(MPI_COMM_WORLD);
+        start_time = get_time_usec();
        
         if (mpi_rank == 0) {
             post_send(ctx, peer, size, num_chunks);
-            start_time = get_time_usec();
             wait_for_completion(ctx, 1);
+            end_send_time = get_time_usec();
         } else {
             wait_for_completion(ctx, num_chunks);
         }
         MPI_Barrier(MPI_COMM_WORLD);
-        end_time = get_time_usec();
-        total_time += (end_time - start_time);
+        end_recv_time = get_time_usec();
+        total_send_time += end_send_time - start_time;
+        total_recv_time += end_recv_time - start_time;
     }
 
-    return total_time / perf_params->test_iterations;  // Return average time per iteration
+    result.send_time_usec = total_send_time / perf_params->test_iterations;
+    result.recv_time_usec = total_recv_time / perf_params->test_iterations;
+    return result;
 }
 
 static void run_performance_suite(ib_context_t *ctx, peer_info_t *peer, perf_params_t *perf_params)
 {
     int size;
-    double avg_time_usec, bandwidth_gbps, latency_usec;
+    double send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec;
     
     print_performance_header(perf_params);
     
     for (size = perf_params->min_size; size <= perf_params->max_size; size *= perf_params->size_step) {
-        avg_time_usec = run_performance_test(ctx, peer, size, perf_params);
+        perf_result_t result = run_performance_test(ctx, peer, size, perf_params);
         
-        if (avg_time_usec < 0) {
+        if (mpi_rank == 0 && (result.send_time_usec < 0 || result.recv_time_usec < 0)) {
             LOG_ERROR("Performance test failed for size %d", size);
             continue;
         }
         
         // Calculate performance metrics
         double double_size = (double)size;
-        latency_usec = avg_time_usec;
-        bandwidth_gbps = (double_size * 1000000) / (avg_time_usec * 1024 * 1024 * 1024); // double_size / 1024 / 1024 / 1024 / (avg_time_usec / 1000000) =
+        send_latency_usec = result.send_time_usec;
+        recv_latency_usec = result.recv_time_usec;
+        send_bandwidth_gbps = (double_size * 1000000) / (result.send_time_usec * 1024 * 1024 * 1024);
+        recv_bandwidth_gbps = (double_size * 1000000) / (result.recv_time_usec * 1024 * 1024 * 1024);
         
-        print_performance_result(size, bandwidth_gbps, latency_usec);
+        print_performance_result(size, send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec);
     }
     
     if (mpi_rank == 0) {
@@ -296,11 +310,14 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
         goto error;
     }
 
-    ctx->mtu = port_attr.active_mtu;
-    ctx->lid = port_attr.lid;
+    LOG_DEBUG("Device capabilities:");
+    LOG_DEBUG("        max_qp_wr: %d", device_attr.max_qp_wr);
+    LOG_DEBUG("        max_cqe: %d", device_attr.max_cqe);
+    LOG_DEBUG("        max_mr: %d", device_attr.max_mr);
+    LOG_DEBUG("        max_pd: %d", device_attr.max_pd);
 
-    // Convert MTU index to actual byte size
-    switch (ctx->mtu) {
+    int mtu_enum = port_attr.active_mtu;
+    switch (mtu_enum) {
         case 1: ctx->mtu = 256; break;   // IBV_MTU_256
         case 2: ctx->mtu = 512; break;   // IBV_MTU_512
         case 3: ctx->mtu = 1024; break;  // IBV_MTU_1024
@@ -308,6 +325,9 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
         case 5: ctx->mtu = 4096; break;  // IBV_MTU_4096
         default: ctx->mtu = 1024; break; // Default
     }
+
+    // Set Lid
+    ctx->lid = port_attr.lid;
 
     // Get GID
     ret = ibv_query_gid(ctx->dev, ctx->ib_port, 0, &ctx->gid);
@@ -320,28 +340,24 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
     ctx->devname = strdup(ibv_get_device_name(dev));
     if (!ctx->devname) {
         LOG_ERROR("Failed to allocate device name");
-        ret = -1;
         goto error;
     }
 
     ctx->pd = ibv_alloc_pd(ctx->dev);
     if (!ctx->pd) {
         LOG_ERROR("Failed to allocate PD");
-        ret = -1;
         goto error;
     }
 
     ctx->cq = ibv_create_cq(ctx->dev, MAX_QP_WR, NULL, NULL, 0);
     if (!ctx->cq) {
         LOG_ERROR("Failed to create CQ");
-        ret = -1;
         goto error;
     }
 
     ctx->buf = malloc(BUFFER_SIZE);
     if (!ctx->buf) {
         LOG_ERROR("Failed to allocate buffer");
-        ret = -1;
         goto error;
     }
 
@@ -349,7 +365,6 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
     ctx->grh_buf = malloc(GRH_HEADER_SIZE);
     if (!ctx->grh_buf) {
         LOG_ERROR("Failed to allocate GRH buffer");
-        ret = -1;
         goto error;
     }
 
@@ -357,7 +372,6 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
                         IBV_ACCESS_LOCAL_WRITE);
     if (!ctx->mr) {
         LOG_ERROR("Failed to register MR");
-        ret = -1;
         goto error;
     }
 
@@ -366,7 +380,6 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
                                 IBV_ACCESS_LOCAL_WRITE);
     if (!ctx->grh_buf_mr) {
         LOG_ERROR("Failed to register GRH MR");
-        ret = -1;
         goto error;
     }
 
@@ -377,6 +390,8 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
     LOG_DEBUG("        MTU: %d", ctx->mtu);
     LOG_DEBUG("        Buffer: %p, size: %d", ctx->buf, BUFFER_SIZE);
     LOG_DEBUG("        GRH Buffer: %p, size: %d", ctx->grh_buf, GRH_HEADER_SIZE);
+    LOG_DEBUG("        PKey table size: %d", port_attr.pkey_tbl_len);
+    LOG_DEBUG("        max_srq_sge: %d", device_attr.max_srq_sge);
 
     return 0;
 
@@ -388,7 +403,7 @@ error:
     if (ctx->cq) ibv_destroy_cq(ctx->cq);
     if (ctx->pd) ibv_dealloc_pd(ctx->pd);
     if (ctx->dev) ibv_close_device(ctx->dev);
-    return ret;
+    return 1;
 }
 
 static int create_ud_qp(ib_context_t *ctx)
@@ -412,7 +427,7 @@ static int create_ud_qp(ib_context_t *ctx)
         return -1;
     }
 
-    LOG_DEBUG("UD QP created successfully");
+    LOG_DEBUG("QP created successfully");
     return 0;
 }
 
@@ -458,7 +473,6 @@ static int setup_ud_qp(ib_context_t *ctx)
         LOG_DEBUG("cannot find default pkey 0xffff on port %d, using index 0 pkey:0x%04x", ctx->ib_port, pkey);
     }
 
-
     // INIT
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_INIT;
@@ -493,16 +507,10 @@ static int setup_ud_qp(ib_context_t *ctx)
         return ret;
     }
 
-    LOG_DEBUG("UD QP setup completed");
+    LOG_DEBUG("QP setup completed");
     LOG_DEBUG("        Using PKey: 0x%04x (index: %d)", pkey, pkey_index);
-    
-    // Check QP state and details
-    struct ibv_qp_init_attr init_attr;
-    ret = ibv_query_qp(ctx->qp, &attr, IBV_QP_STATE, &init_attr);
-    if (ret == 0) {
-        LOG_DEBUG("        QP state: %d (RTS=%d), QP num: %u, qkey: 0x%x, port: %d, lid: %d",
-               attr.qp_state, IBV_QPS_RTS, ctx->qp->qp_num, DEF_QKEY, ctx->ib_port, ctx->lid);
-    }
+    LOG_DEBUG("        QP state: %d (RTS=%d), QPN: %u, qkey: 0x%x, port: %d, lid: %d",
+           attr.qp_state, IBV_QPS_RTS, ctx->qp->qp_num, DEF_QKEY, ctx->ib_port, ctx->lid);
     
     return 0;
 }
@@ -523,10 +531,8 @@ static void cleanup_ib_context(ib_context_t *ctx)
     if (ctx->devname) free(ctx->devname);
 }
 
-// ユニキャスト用peer情報交換関数
 static int exchange_peer_info(ib_context_t *ctx, peer_info_t *peer)
 {
-    // 自分の情報を準備
     peer_info_t my_info = {
         .lid = ctx->lid,
         .qpn = ctx->qp->qp_num,
@@ -564,8 +570,7 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks)
     
     // check the buffer size
     if (len > BUFFER_SIZE) {
-        LOG_ERROR("Total length %d too large for buffer %d", 
-               len, BUFFER_SIZE);
+        LOG_ERROR("Total length %d too large for buffer %d", len, BUFFER_SIZE);
         return -1;
     }
     
@@ -607,7 +612,6 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks)
         } else {
             wrs[i].next = NULL;
         }
-        
         remaining -= current_len;
     }
     
@@ -665,7 +669,6 @@ static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chun
     if (!ah) {
         LOG_ERROR("Failed to create address handle: %s (errno=%d)", 
                strerror(errno), errno);
-        ret = -1;
         goto cleanup;
     }
     
@@ -680,14 +683,14 @@ static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chun
         sges[i].length = current_len;
         sges[i].lkey = ctx->mr->lkey;
         
-        // Set WR for unicast
+        // Set WR
         memset(&wrs[i], 0, sizeof(struct ibv_send_wr));
         wrs[i].wr_id = 2 + i; // Unique WR ID
         wrs[i].opcode = IBV_WR_SEND;
         wrs[i].send_flags = (i == num_chunks - 1) ? IBV_SEND_SIGNALED : 0;
         wrs[i].sg_list = &sges[i];
         wrs[i].num_sge = 1;
-        wrs[i].wr.ud.remote_qpn = peer->qpn; // 相手のQP番号を使用
+        wrs[i].wr.ud.remote_qpn = peer->qpn;
         wrs[i].wr.ud.remote_qkey = DEF_QKEY;
         wrs[i].wr.ud.ah = ah;
         
@@ -697,7 +700,6 @@ static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chun
         } else {
             wrs[i].next = NULL;
         }
-        
         remaining -= current_len;
     }
 
@@ -718,7 +720,7 @@ cleanup:
     if (sges) free(sges);
     if (ret < 0 && ah) ibv_destroy_ah(ah);
     
-    return ret;
+    return 1;
 }
 
 static int wait_for_completion(ib_context_t *ctx, int expected_wrs)
@@ -735,7 +737,7 @@ static int wait_for_completion(ib_context_t *ctx, int expected_wrs)
         ret = ibv_poll_cq(ctx->cq, 1, &wc);
         if (ret < 0) {
             LOG_ERROR("CQ poll failed: %s", strerror(ret));
-            return ret;
+            return 1;
         }
         if (ret == 0) {
             timeout_counter++;
@@ -746,7 +748,7 @@ static int wait_for_completion(ib_context_t *ctx, int expected_wrs)
             if (timeout_counter > MAX_TIMEOUT) {
                 LOG_INFO("Timeout waiting for completion (completed: %d/%d)", 
                        completed_wrs, expected_wrs);
-                return -1;
+                return 1;
             }
             usleep(1000);  // sleep 1ms to reduce busy wait
             continue;
@@ -757,7 +759,7 @@ static int wait_for_completion(ib_context_t *ctx, int expected_wrs)
 
         if (wc.status != IBV_WC_SUCCESS) {
             LOG_ERROR("WC error: %s", ibv_wc_status_str(wc.status));
-            return -1;
+            return 1;
         }
         
         completed_wrs++;
@@ -829,7 +831,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // 環境変数からログレベルを設定
+    // set log level
     log_level_env = getenv("LOG_LEVEL");
     if (log_level_env != NULL) {
         if (strcmp(log_level_env, "ERROR") == 0 || strcmp(log_level_env, "0") == 0) {
@@ -892,16 +894,10 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    // Create and setup UD QP
+    // Create QP
     ret = create_ud_qp(&ctx);
     if (ret < 0) {
-        LOG_ERROR("Failed to create UD QP");
-        goto cleanup;
-    }
-
-    ret = setup_ud_qp(&ctx);
-    if (ret < 0) {
-        LOG_ERROR("Failed to setup UD QP");
+        LOG_ERROR("Failed to create QP");
         goto cleanup;
     }
 
@@ -912,8 +908,14 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
+    // Set up QP
+    ret = setup_ud_qp(&ctx);
+    if (ret < 0) {
+        LOG_ERROR("Failed to setup QP");
+        goto cleanup;
+    }
+
     LOG_DEBUG("Successfully initialized UD QP for unicast");
-    LOG_DEBUG("MTU: %d bytes", ctx.mtu);
 
     // Synchronize before starting performance tests
     MPI_Barrier(MPI_COMM_WORLD);

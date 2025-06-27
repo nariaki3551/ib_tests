@@ -129,104 +129,57 @@ static void print_performance_result(int size, double bandwidth_gbps, double lat
 
 static double run_performance_test(ib_context_t *ctx, mcast_info_t *mcast_info, int size, perf_params_t *perf_params)
 {
-    char *msg;
     double start_time = 0.0, end_time = 0.0, total_time = 0.0;
-    int ret, i;
-    
-    // Allocate message buffer
-    msg = malloc(size);
-    if (!msg) {
-        LOG_ERROR("Failed to allocate message buffer");
-        return -1.0;
-    }
-    
-    // Fill message with test data (all 3s for verification)
-    for (i = 0; i < size; i++) {
-        msg[i] = TEST_DATA_VALUE;
-    }
-    
-    // データをバッファにコピー（計測の外側）
-    memcpy(ctx->buf, msg, size);
-    free(msg);
     int chunk_size = ctx->mtu - GRH_HEADER_SIZE;
     int num_chunks = (size + chunk_size - 1) / chunk_size;
-    
+
+    // 送信データを定数で埋める
+    if (mpi_rank == 0) {
+        memset(ctx->buf, TEST_DATA_VALUE, size);
+    }
+
     // Warmup phase
     LOG_DEBUG("\033[1;36mWarmup phase\033[0m");
-    for (i = 0; i < perf_params->warmup_iterations; i++) {
+    for (int i = 0; i < perf_params->warmup_iterations; i++) {
         LOG_DEBUG("\033[36mWarmup iteration start [%d/%d]\033[0m", i+1, perf_params->warmup_iterations);
         if (mpi_rank > 0) {
-            ret = post_recv(ctx, size, num_chunks);
-            if (ret < 0) {
-                LOG_ERROR("Failed to post initial receive buffer");
-                return -1.0;
-            }
+            post_recv(ctx, size, num_chunks);
         }
         MPI_Barrier(MPI_COMM_WORLD);
+
         if (mpi_rank == 0) {
-            ret = post_send(ctx, mcast_info, size, num_chunks);
-            if (ret < 0) {
-                LOG_ERROR("Failed to send multicast during warmup");
-                return -1.0;
-            }
-            ret = wait_for_completion(ctx, 1);
-            if (ret < 0) {
-                LOG_ERROR("Failed to wait for send completion during warmup");
-                return -1.0;
-            }
+            post_send(ctx, mcast_info, size, num_chunks);
+            wait_for_completion(ctx, 1);
         } else {
-            ret = wait_for_completion(ctx, num_chunks);
-            if (ret < 0) {
-                LOG_ERROR("Failed to wait for receive completion during warmup");
-                return -1.0;
-            }
-            ret = verify_received_data(ctx, size);
-            if (ret < 0) {
-                LOG_ERROR("Data verification failed during warmup");
-                return -1.0;
-            }
+            wait_for_completion(ctx, num_chunks);
+            verify_received_data(ctx, size);
+            memset(ctx->buf, 0, size);
         }
     }
     LOG_DEBUG("Warmup completed");
-    
+
    
     // Measurement phase
     LOG_DEBUG("\033[1;36mMeasurement phase\033[0m");
-    for (i = 0; i < perf_params->test_iterations; i++) {
+    for (int i = 0; i < perf_params->test_iterations; i++) {
         LOG_DEBUG("\033[36mMeasurement iteration start [%d/%d]\033[0m", i+1, perf_params->test_iterations);
         if (mpi_rank > 0) {
-            ret = post_recv(ctx, size, num_chunks);
-            if (ret < 0) {
-                LOG_ERROR("Failed to post receive for measurement");
-                return -1.0;
-            }
+            post_recv(ctx, size, num_chunks);
         }
         MPI_Barrier(MPI_COMM_WORLD);
        
         if (mpi_rank == 0) {
-            ret = post_send(ctx, mcast_info, size, num_chunks);
-            if (ret < 0) {
-                LOG_ERROR("Failed to send multicast during measurement");
-                return -1.0;
-            }
+            post_send(ctx, mcast_info, size, num_chunks);
             start_time = get_time_usec();
-            ret = wait_for_completion(ctx, 1);
-            if (ret < 0) {
-                LOG_ERROR("Failed to wait for send completion during measurement");
-                return -1.0;
-            }
+            wait_for_completion(ctx, 1);
         } else {
-            ret = wait_for_completion(ctx, num_chunks);
-            if (ret < 0) {
-                LOG_ERROR("Failed to wait for receive completion during measurement");
-                return -1.0;
-            }
+            wait_for_completion(ctx, num_chunks);
         }
         MPI_Barrier(MPI_COMM_WORLD);
         end_time = get_time_usec();
         total_time += (end_time - start_time);
     }
-    
+
     return total_time / perf_params->test_iterations;  // Return average time per iteration
 }
 
@@ -265,14 +218,13 @@ static void print_usage(const char *prog)
     printf("Options:\n");
     printf("  -d <device>      IB device name (default: first available)\n");
     printf("  -l <min_size>    Minimum message size in bytes (default: 1024)\n");
-    printf("  -u <max_size>    Maximum message size in bytes (default: 1048576)\n");
+    printf("  -u <max_size>    Maximum message size in bytes (default: 1073741824)\n");
     printf("  -w <warmup>      Number of warmup iterations (default: 10)\n");
     printf("  -i <iterations>  Number of test iterations (default: 100)\n");
     printf("  -s <step>        Size step multiplier (default: 2)\n");
     printf("  -h               Show this help\n");
     printf("\nEnvironment Variables:\n");
     printf("  LOG_LEVEL        Set logging level (ERROR/0, INFO/1, DEBUG/2, default: INFO)\n");
-    printf("\nNote: Uses fake multicast address %s initially\n", FAKE_MCAST_ADDR);
 }
 
 static int get_ib_device(const char *dev_name, struct ibv_device **dev)
@@ -316,6 +268,7 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
 
     ret = get_ib_device(dev_name, &dev);
     if (ret < 0) {
+        LOG_ERROR("Failed to get IB device");
         return ret;
     }
 
@@ -834,7 +787,7 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks)
         // Set SGE (GRH + Payload)
         memset(&sges[2*i], 0, sizeof(struct ibv_sge));
         sges[2*i].addr = (uintptr_t)((char*)ctx->grh_buf);
-        sges[2*i].length = 40;
+        sges[2*i].length = GRH_HEADER_SIZE;
         sges[2*i].lkey = ctx->grh_buf_mr->lkey;
 
         memset(&sges[2*i+1], 0, sizeof(struct ibv_sge));
@@ -845,7 +798,7 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks)
         // Set WR
         memset(&wrs[i], 0, sizeof(struct ibv_recv_wr));
         wrs[i].wr_id = 2 + i; // Use the same WR ID as the sender
-        wrs[i].sg_list = &sges[2*i]; // Start position of the correct SGE array
+        wrs[i].sg_list = &sges[2*i];
         wrs[i].num_sge = 2;
         
         // Link to next WR
@@ -854,6 +807,8 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks)
         } else {
             wrs[i].next = NULL;
         }
+
+        remaining -= current_len;
     }
     
     // Post receive WR

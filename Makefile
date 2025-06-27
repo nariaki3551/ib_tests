@@ -13,6 +13,10 @@ PERF_SOURCES = ib_multicast_perf.c
 # Objects
 PERF_OBJECTS = $(PERF_SOURCES:.c=.o)
 
+# Unicast performance test
+ib_unicast_perf: ib_unicast_perf.c
+	$(MPICC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
 .PHONY: all clean perf test run run-perf
 
 all: $(PERF_TARGET)
@@ -35,29 +39,29 @@ $(PERF_TARGET): $(PERF_OBJECTS)
 	$(MPICC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(PERF_OBJECTS) $(PERF_TARGET)
+	rm -f $(PERF_OBJECTS) $(PERF_TARGET) ib_unicast_perf
 
 FLAGS = --mca plm_rsh_args "-p 12345"
 
 run-perf:
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_0 -w 20 -i 100 \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
-	: -n 1 --host snail03:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host snail03:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
-	: -n 1 --host tvm01:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host tvm01:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
-	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_test/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_0 -w 20 -i 100 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
+	: -n 1 --host snail03:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host snail03:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
+	: -n 1 --host tvm01:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host tvm01:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
+	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
 
 run-perf-quick:
 	# mpirun -np 2 $(PERF_TARGET) -d mlx5_0 -l 1048576 -u 1048576
 	# mpirun -np 2 $(PERF_TARGET) -d mlx5_0 -l 1024 -u 1024
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=DEBUG -- /app/ib_test/$(PERF_TARGET) -d mlx5_0 -l 1048576 -u 1048576 -w 1 -i 2 \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=DEBUG -- /app/ib_test/$(PERF_TARGET) -d mlx5_1 -l 1048576 -u 1048576 -w 1 -i 2 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=DEBUG -- /app/ib_tests/$(PERF_TARGET) -d mlx5_0 -l 1048576 -u 1048576 -w 1 -i 2 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=DEBUG -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -l 1048576 -u 1048576 -w 1 -i 2 \
 
 # Help target
 help:

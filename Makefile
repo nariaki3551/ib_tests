@@ -41,6 +41,7 @@ ib_rc_unicast_perf: ib_rc_unicast_perf.c
 	scp -P 12345 $@ tvm02:/app/ib_tests/
 
 test: run-mcast-quick run-ud_unicast-quick run-rc_unicast-quick
+perf: run-mcast run-ud_unicast run-rc_unicast
 
 # Run performance test with specific parameters
 run-mcast: ib_multicast_perf

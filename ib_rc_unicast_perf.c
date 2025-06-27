@@ -103,9 +103,9 @@ static void print_performance_header(perf_params_t *perf_params)
         printf("Test iterations: %d\n", perf_params->test_iterations);
         printf("MPI ranks: %d\n", mpi_size);
         printf("\n");
-        printf("%-20s %-12s %-12s %-12s %-12s\n", 
+        printf("%-20s %-16s %-16s %-16s %-16s\n", 
                "Size (bytes)", "Send BW (GB/s)", "Recv BW (GB/s)", "Send Lat (us)", "Recv Lat (us)");
-        printf("--------------------------------------------------------------------------------\n");
+        printf("-----------------------------------------------------------------------------------\n");
     }
 }
 
@@ -124,7 +124,7 @@ static void print_performance_result(int size, double send_bandwidth_gbps, doubl
             snprintf(size_str, sizeof(size_str), "%d (%.0fG)", size, (double)size / (1024 * 1024 * 1024));
         }
         
-        printf("%-20s %-12.3f %-12.3f %-12.2f %-12.2f\n", 
+        printf("%-20s %-16.4f %-16.4f %-16.2f %-16.2f\n", 
                size_str, send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec);
     }
 }
@@ -216,7 +216,7 @@ static void run_performance_suite(ib_context_t *ctx, perf_params_t *perf_params)
     }
     
     if (mpi_rank == 0) {
-        printf("--------------------------------------------------------------------\n");
+        printf("-----------------------------------------------------------------------------------\n");
         printf("Performance test completed\n");
     }
 }
@@ -668,8 +668,7 @@ static int post_send(ib_context_t *ctx, int len, int num_chunks)
     // Post batch send
     ret = ibv_post_send(ctx->qp, wrs, &bad_wr);
     if (ret) {
-        LOG_ERROR("Failed to post batch send: %s (errno=%d)", 
-               strerror(errno), errno);
+        LOG_ERROR("Failed to post batch send: %s (errno=%d)", strerror(errno), errno);
         goto cleanup;
     }
     LOG_DEBUG("Batch send posted successfully (%d chunks; wr_ids %lu-%lu)", num_chunks, wrs[0].wr_id, wrs[num_chunks-1].wr_id);
@@ -677,8 +676,7 @@ static int post_send(ib_context_t *ctx, int len, int num_chunks)
 cleanup:
     if (wrs) free(wrs);
     if (sges) free(sges);
-    
-    return 1;
+    return ret;
 }
 
 static int wait_for_completion(ib_context_t *ctx, int expected_wrs)
@@ -771,7 +769,7 @@ int main(int argc, char *argv[])
         .test_iterations = 100,
         .size_step = 2,
         .min_size = 1024,
-        .max_size = 1024 * 1024 * 1024
+        .max_size = 32 * 1024 * 1024
     };
 
     // Initialize MPI

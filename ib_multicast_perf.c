@@ -103,15 +103,15 @@ static void print_performance_header(perf_params_t *perf_params)
 {
     if (mpi_rank == 0) {
         printf("\n");
-        printf("IB RC Unicast Performance Test\n");
-        printf("==============================\n");
+        printf("IB Multicast Performance Test\n");
+        printf("=============================\n");
         printf("Warmup iterations: %d\n", perf_params->warmup_iterations);
         printf("Test iterations: %d\n", perf_params->test_iterations);
         printf("MPI ranks: %d\n", mpi_size);
         printf("\n");
-        printf("%-20s %-12s %-12s %-12s %-12s\n", 
+        printf("%-20s %-16s %-16s %-16s %-16s\n", 
                "Size (bytes)", "Send BW (GB/s)", "Recv BW (GB/s)", "Send Lat (us)", "Recv Lat (us)");
-        printf("--------------------------------------------------------------------------------\n");
+        printf("-----------------------------------------------------------------------------------\n");
     }
 }
 
@@ -130,7 +130,7 @@ static void print_performance_result(int size, double send_bandwidth_gbps, doubl
             snprintf(size_str, sizeof(size_str), "%d (%.0fG)", size, (double)size / (1024 * 1024 * 1024));
         }
         
-        printf("%-20s %-12.3f %-12.3f %-12.2f %-12.2f\n", 
+        printf("%-20s %-16.4f %-16.4f %-16.2f %-16.2f\n", 
                size_str, send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec);
     }
 }
@@ -220,7 +220,7 @@ static void run_performance_suite(ib_context_t *ctx, mcast_info_t *mcast_info, p
     }
     
     if (mpi_rank == 0) {
-        printf("--------------------------------------------------------------------\n");
+        printf("-----------------------------------------------------------------------------------\n");
         printf("Performance test completed\n");
     }
 }
@@ -515,9 +515,9 @@ static int setup_ud_qp(ib_context_t *ctx)
     // Check QP state and details
     struct ibv_qp_init_attr init_attr;
     ret = ibv_query_qp(ctx->qp, &attr, IBV_QP_STATE, &init_attr);
-    if (ret == 0) {
-	    LOG_ERROR("Faild to query QP state");
-        return 1;
+    if (ret) {
+	    LOG_ERROR("Faild to query QP state: %s (errno=%d)", strerror(errno), errno);
+        return ret;
     }
 
     LOG_DEBUG("QP setup completed");
@@ -1056,7 +1056,7 @@ int main(int argc, char *argv[])
         .test_iterations = 100,
         .size_step = 2,
         .min_size = 1024,
-        .max_size = 1024 * 1024 * 1024
+        .max_size = 32 * 1024 * 1024
     };
 
     // Initialize MPI

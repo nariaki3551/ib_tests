@@ -1,0 +1,904 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <net/if.h>
+#include <ifaddrs.h>
+#include <fcntl.h>
+#include <infiniband/verbs.h>
+#include <rdma/rdma_cma.h>
+#include <mpi.h>
+#include <dirent.h>
+#include <time.h>
+#include <sys/time.h>
+
+#define BUFFER_SIZE 1024 * 1024 * 1024
+#define MAX_QP_WR 8192
+#define DEF_QKEY 0x1a1a1a1a
+
+typedef struct {
+    int warmup_iterations;
+    int test_iterations;
+    int size_step;
+    int min_size;
+    int max_size;
+} perf_params_t;
+
+// ユニキャスト用peer情報構造体
+typedef struct {
+    uint16_t lid;
+    uint32_t qpn;
+    union ibv_gid gid;
+} peer_info_t;
+
+// IB context structure
+typedef struct {
+    struct ibv_context *dev;
+    struct ibv_pd *pd;
+    struct ibv_cq *cq;
+    struct ibv_qp *qp;
+    struct ibv_mr *mr;
+    void *buf;
+    int ib_port;
+    int mtu;      // バイト数
+    int mtu_enum; // enum値
+    uint16_t lid;
+    union ibv_gid gid;
+    char *devname;
+} ib_context_t;
+
+// パフォーマンス測定結果構造体を追加
+typedef struct {
+    double send_time_usec;
+    double recv_time_usec;
+} perf_result_t;
+
+// Global variables
+static int mpi_rank;
+static int mpi_size;
+static const char TEST_DATA_VALUE = 3;  // テストデータの値
+
+// ログレベル定義
+typedef enum {
+    LOG_LEVEL_ERROR = 0,
+    LOG_LEVEL_INFO = 1,
+    LOG_LEVEL_DEBUG = 2,
+} log_level_t;
+static log_level_t g_log_level = LOG_LEVEL_INFO;
+
+#define LOG_ERROR(fmt, ...) \
+    do { if (g_log_level >= LOG_LEVEL_ERROR) fprintf(stderr, "\033[31mRank %d: " fmt " [%s:%d]\033[0m\n", mpi_rank, ##__VA_ARGS__, __func__, __LINE__); } while (0)
+#define LOG_INFO(fmt, ...) \
+    do { if (g_log_level >= LOG_LEVEL_INFO) fprintf(stderr, "Rank %d: " fmt " [%s:%d]\n", mpi_rank, ##__VA_ARGS__, __func__, __LINE__); } while (0)
+#define LOG_DEBUG(fmt, ...) \
+    do { if (g_log_level >= LOG_LEVEL_DEBUG) fprintf(stderr, "Rank %d: " fmt " [%s:%d]\n", mpi_rank, ##__VA_ARGS__, __func__, __LINE__); } while (0)
+
+// Performance measurement functions
+static double get_time_usec(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec * 1000000.0 + (double)tv.tv_usec;
+}
+
+// Forward declarations for functions used in run_performance_test
+static int post_recv(ib_context_t *ctx, int len, int num_chunks);
+static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chunks);
+static int wait_for_completion(ib_context_t *ctx, int expected_wrs);
+static int verify_received_data(ib_context_t *ctx, int size);
+
+static void print_performance_header(perf_params_t *perf_params)
+{
+    if (mpi_rank == 0) {
+        printf("\n");
+        printf("IB UD Unicast Performance Test\n");
+        printf("==============================\n");
+        printf("Warmup iterations: %d\n", perf_params->warmup_iterations);
+        printf("Test iterations: %d\n", perf_params->test_iterations);
+        printf("MPI ranks: %d\n", mpi_size);
+        printf("\n");
+        printf("%-20s %-12s %-12s\n", 
+               "Size (bytes)", "Bandwidth (GB/s)", "Latency (usec)");
+        printf("--------------------------------------------------------------------------------\n");
+    }
+}
+
+static void print_performance_result(int size, double bandwidth_gbps, double latency_usec)
+{
+    if (mpi_rank == 0) {
+        char size_str[32];
+        if (size < 1024) {
+            snprintf(size_str, sizeof(size_str), "%d", size);
+        } else if (size < 1024 * 1024) {
+            snprintf(size_str, sizeof(size_str), "%d (%.0fK)", size, (double)size / 1024);
+        } else if (size < 1024 * 1024 * 1024) {
+            snprintf(size_str, sizeof(size_str), "%d (%.0fM)", size, (double)size / (1024 * 1024));
+        } else {
+            snprintf(size_str, sizeof(size_str), "%d (%.0fG)", size, (double)size / (1024 * 1024 * 1024));
+        }
+        
+        printf("%-20s %-12.3f %-12.2f\n", 
+               size_str, bandwidth_gbps, latency_usec);
+    }
+}
+
+static perf_result_t run_performance_test(ib_context_t *ctx, peer_info_t *peer, int size, perf_params_t *perf_params)
+{
+    double send_start_time = 0.0, send_end_time = 0.0, recv_start_time = 0.0, recv_end_time = 0.0;
+    double total_send_time = 0.0, total_recv_time = 0.0;
+    int chunk_size = ctx->mtu;
+    int num_chunks = (size + chunk_size - 1) / chunk_size;
+    perf_result_t result = {0.0, 0.0};
+
+    // 送信データを定数で埋める
+    if (mpi_rank == 0) {
+        memset(ctx->buf, TEST_DATA_VALUE, size);
+    }
+
+    // Warmup phase
+    LOG_DEBUG("\033[1;36mWarmup phase\033[0m");
+    for (int i = 0; i < perf_params->warmup_iterations; i++) {
+        LOG_DEBUG("\033[36mWarmup iteration start [%d/%d]\033[0m", i+1, perf_params->warmup_iterations);
+        if (mpi_rank > 0) {
+            post_recv(ctx, size, num_chunks);
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        if (mpi_rank == 0) {
+            post_send(ctx, peer, size, num_chunks);
+            wait_for_completion(ctx, 1);
+        } else {
+            wait_for_completion(ctx, num_chunks);
+            verify_received_data(ctx, size);
+            memset(ctx->buf, 0, size);
+        }
+    }
+    LOG_DEBUG("Warmup completed");
+
+   
+    // Measurement phase
+    LOG_DEBUG("\033[1;36mMeasurement phase\033[0m");
+    for (int i = 0; i < perf_params->test_iterations; i++) {
+        LOG_DEBUG("\033[36mMeasurement iteration start [%d/%d]\033[0m", i+1, perf_params->test_iterations);
+        if (mpi_rank > 0) {
+            post_recv(ctx, size, num_chunks);
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+       
+        if (mpi_rank == 0) {
+            post_send(ctx, peer, size, num_chunks);
+            send_start_time = get_time_usec();
+            recv_start_time = get_time_usec();
+            wait_for_completion(ctx, 1);
+            send_end_time = get_time_usec();
+        } else {
+            wait_for_completion(ctx, num_chunks);
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+        recv_end_time = get_time_usec();
+        total_send_time += (send_end_time - send_start_time);
+        total_recv_time += (recv_end_time - recv_start_time);
+    }
+
+    result.send_time_usec = total_send_time / perf_params->test_iterations;
+    result.recv_time_usec = total_recv_time / perf_params->test_iterations;
+    return result;
+}
+
+static void run_performance_suite(ib_context_t *ctx, peer_info_t *peer, perf_params_t *perf_params)
+{
+    int size;
+    double avg_time_usec, bandwidth_gbps, latency_usec;
+    
+    print_performance_header(perf_params);
+    
+    for (size = perf_params->min_size; size <= perf_params->max_size; size *= perf_params->size_step) {
+        perf_result_t result = run_performance_test(ctx, peer, size, perf_params);
+        
+        avg_time_usec = result.send_time_usec + result.recv_time_usec;
+        
+        if (avg_time_usec < 0) {
+            LOG_ERROR("Performance test failed for size %d", size);
+            continue;
+        }
+        
+        // Calculate performance metrics
+        double double_size = (double)size;
+        latency_usec = avg_time_usec;
+        bandwidth_gbps = (double_size * 1000000) / (avg_time_usec * 1024 * 1024 * 1024); // double_size / 1024 / 1024 / 1024 / (avg_time_usec / 1000000) =
+        
+        print_performance_result(size, bandwidth_gbps, latency_usec);
+    }
+    
+    if (mpi_rank == 0) {
+        printf("--------------------------------------------------------------------\n");
+        printf("Performance test completed\n");
+    }
+}
+
+static void print_usage(const char *prog)
+{
+    printf("Usage: %s [options]\n", prog);
+    printf("Options:\n");
+    printf("  -d <device>      IB device name (default: first available)\n");
+    printf("  -l <min_size>    Minimum message size in bytes (default: 1024)\n");
+    printf("  -u <max_size>    Maximum message size in bytes (default: 1073741824)\n");
+    printf("  -w <warmup>      Number of warmup iterations (default: 10)\n");
+    printf("  -i <iterations>  Number of test iterations (default: 100)\n");
+    printf("  -s <step>        Size step multiplier (default: 2)\n");
+    printf("  -h               Show this help\n");
+    printf("\nEnvironment Variables:\n");
+    printf("  LOG_LEVEL        Set logging level (ERROR/0, INFO/1, DEBUG/2, default: INFO)\n");
+    printf("\nNote: This program requires exactly 2 MPI ranks (sender and receiver)\n");
+}
+
+static int get_ib_device(const char *dev_name, struct ibv_device **dev)
+{
+    struct ibv_device **device_list;
+    int num_devices, i;
+
+    device_list = ibv_get_device_list(&num_devices);
+    if (!device_list || !num_devices) {
+        LOG_ERROR("No IB devices available");
+        return -1;
+    }
+
+    if (!dev_name) {
+        *dev = device_list[0];
+        LOG_INFO("Using device: %s", ibv_get_device_name(*dev));
+    } else {
+        for (i = 0; device_list[i]; ++i) {
+            if (!strcmp(ibv_get_device_name(device_list[i]), dev_name)) {
+                *dev = device_list[i];
+                LOG_INFO("Using device: %s", ibv_get_device_name(*dev));
+                break;
+            }
+        }
+        if (!device_list[i]) {
+            LOG_ERROR("IB device %s not found", dev_name);
+            ibv_free_device_list(device_list);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int init_ib_context(ib_context_t *ctx, const char *dev_name)
+{
+    struct ibv_device *dev;
+    struct ibv_port_attr port_attr;
+    struct ibv_device_attr device_attr;
+    int ret;
+
+    ret = get_ib_device(dev_name, &dev);
+    if (ret < 0) {
+        LOG_ERROR("Failed to get IB device");
+        return ret;
+    }
+
+    ctx->dev = ibv_open_device(dev);
+    if (!ctx->dev) {
+        LOG_ERROR("Failed to open IB device");
+        return -1;
+    }
+
+    ctx->ib_port = 1; // Default to port 1
+
+    ret = ibv_query_port(ctx->dev, ctx->ib_port, &port_attr);
+    if (ret < 0) {
+        LOG_ERROR("Failed to query port");
+        goto error;
+    }
+
+    if (port_attr.state != IBV_PORT_ACTIVE) {
+        LOG_ERROR("IB port is not active");
+        ret = -1;
+        goto error;
+    }
+
+    ret = ibv_query_device(ctx->dev, &device_attr);
+    if (ret < 0) {
+        LOG_ERROR("Failed to query device");
+        goto error;
+    }
+
+    LOG_DEBUG("Device capabilities:");
+    LOG_DEBUG("        max_qp_wr: %d", device_attr.max_qp_wr);
+    LOG_DEBUG("        max_cqe: %d", device_attr.max_cqe);
+    LOG_DEBUG("        max_mr: %d", device_attr.max_mr);
+    LOG_DEBUG("        max_pd: %d", device_attr.max_pd);
+
+    ctx->mtu_enum = port_attr.active_mtu;  // enum値を保持
+    ctx->mtu = port_attr.active_mtu;
+    switch (ctx->mtu) {
+        case 1: ctx->mtu = 256; break;   // IBV_MTU_256
+        case 2: ctx->mtu = 512; break;   // IBV_MTU_512
+        case 3: ctx->mtu = 1024; break;  // IBV_MTU_1024
+        case 4: ctx->mtu = 2048; break;  // IBV_MTU_2048
+        case 5: ctx->mtu = 4096; break;  // IBV_MTU_4096
+        default: ctx->mtu = 4096; break; // 100Gbps環境では4096をデフォルトに
+    }
+
+    ctx->lid = port_attr.lid;
+
+    // Get GID
+    ret = ibv_query_gid(ctx->dev, ctx->ib_port, 0, &ctx->gid);
+    if (ret < 0) {
+        LOG_ERROR("Failed to query GID");
+        goto error;
+    }
+
+    // Store device name
+    ctx->devname = strdup(ibv_get_device_name(dev));
+    if (!ctx->devname) {
+        LOG_ERROR("Failed to allocate device name");
+        ret = -1;
+        goto error;
+    }
+
+    ctx->pd = ibv_alloc_pd(ctx->dev);
+    if (!ctx->pd) {
+        LOG_ERROR("Failed to allocate PD");
+        ret = -1;
+        goto error;
+    }
+
+    ctx->cq = ibv_create_cq(ctx->dev, MAX_QP_WR, NULL, NULL, 0);
+    if (!ctx->cq) {
+        LOG_ERROR("Failed to create CQ");
+        ret = -1;
+        goto error;
+    }
+
+    ctx->buf = malloc(BUFFER_SIZE);
+    if (!ctx->buf) {
+        LOG_ERROR("Failed to allocate buffer");
+        ret = -1;
+        goto error;
+    }
+
+    ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, BUFFER_SIZE, 
+                        IBV_ACCESS_LOCAL_WRITE);
+    if (!ctx->mr) {
+        LOG_ERROR("Failed to register MR");
+        ret = -1;
+        goto error;
+    }
+
+    LOG_DEBUG("IB context initialized successfully");
+    LOG_DEBUG("        Device: %s", ibv_get_device_name(dev));
+    LOG_DEBUG("        Port: %d", ctx->ib_port);
+    LOG_DEBUG("        LID: %d", ctx->lid);
+    LOG_DEBUG("        MTU: %d", ctx->mtu);
+    LOG_DEBUG("        Buffer: %p, size: %d", ctx->buf, BUFFER_SIZE);
+
+    return 0;
+
+error:
+    if (ctx->mr) ibv_dereg_mr(ctx->mr);
+    if (ctx->buf) free(ctx->buf);
+    if (ctx->cq) ibv_destroy_cq(ctx->cq);
+    if (ctx->pd) ibv_dealloc_pd(ctx->pd);
+    if (ctx->dev) ibv_close_device(ctx->dev);
+    return -1;
+}
+
+static int create_rc_qp(ib_context_t *ctx)
+{
+    struct ibv_qp_init_attr qp_init_attr = {
+        .qp_type = IBV_QPT_RC,
+        .send_cq = ctx->cq,
+        .recv_cq = ctx->cq,
+        .cap = {
+            .max_send_wr = MAX_QP_WR,
+            .max_recv_wr = MAX_QP_WR,
+            .max_send_sge = 1,
+            .max_recv_sge = 1,
+            .max_inline_data = 0
+        }
+    };
+
+    ctx->qp = ibv_create_qp(ctx->pd, &qp_init_attr);
+    if (!ctx->qp) {
+        LOG_ERROR("Failed to create RC QP: %s (errno=%d)", strerror(errno), errno);
+        return -1;
+    }
+
+    LOG_DEBUG("RC QP created successfully");
+    return 0;
+}
+
+static int setup_rc_qp(ib_context_t *ctx, peer_info_t *peer)
+{
+    struct ibv_qp_attr attr;
+    struct ibv_port_attr port_attr;
+    int flags;
+    int ret;
+    uint16_t pkey;
+    int pkey_index;
+
+    // Get port attributes
+    ret = ibv_query_port(ctx->dev, ctx->ib_port, &port_attr);
+    if (ret) {
+        LOG_ERROR("Failed to query port: %s (errno=%d)", strerror(errno), errno);
+        return -1;
+    }
+
+    // Find PKey
+    for (pkey_index = 0; pkey_index < port_attr.pkey_tbl_len; pkey_index++) {
+        ret = ibv_query_pkey(ctx->dev, ctx->ib_port, pkey_index, &pkey);
+        if (ret) {
+            LOG_ERROR("Failed to query PKey at index %d: %s (errno=%d)", pkey_index, strerror(errno), errno);
+            return -1;
+        }
+        if (pkey == 0xffff) { // DEF_PKEY = 0xffff
+            break;
+        }
+    }
+
+    if (pkey_index >= port_attr.pkey_tbl_len) {
+        pkey_index = 0;
+        ret = ibv_query_pkey(ctx->dev, ctx->ib_port, pkey_index, &pkey);
+        if (ret) {
+            LOG_ERROR("Failed to query PKey at index 0: %s (errno=%d)", strerror(errno), errno);
+            return -1;
+        }
+        if (!pkey) {
+            LOG_ERROR("cannot find valid PKEY");
+            return -1;
+        }
+        LOG_DEBUG("cannot find default pkey 0xffff on port %d, using index 0 pkey:0x%04x", ctx->ib_port, pkey);
+    }
+
+    // INIT
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state = IBV_QPS_INIT;
+    attr.pkey_index = pkey_index;
+    attr.port_num = ctx->ib_port;
+    attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
+    flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
+    ret = ibv_modify_qp(ctx->qp, &attr, flags);
+    if (ret) {
+        LOG_ERROR("Failed to modify QP to INIT: %s (errno=%d)", strerror(errno), errno);
+        return -1;
+    }
+
+    // RTR
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state = IBV_QPS_RTR;
+    attr.path_mtu = ctx->mtu_enum; // enum値を使用
+    attr.dest_qp_num = peer->qpn;
+    attr.rq_psn = 0;
+    attr.max_dest_rd_atomic = 1;
+    attr.min_rnr_timer = 12;
+    // RC QPではah_attr必須
+    attr.ah_attr.is_global = 0;
+    attr.ah_attr.dlid = peer->lid;
+    attr.ah_attr.sl = 0;
+    attr.ah_attr.src_path_bits = 0;
+    attr.ah_attr.port_num = ctx->ib_port;
+    flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+            IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
+    ret = ibv_modify_qp(ctx->qp, &attr, flags);
+    if (ret) {
+        LOG_ERROR("Failed to modify QP to RTR: %s (errno=%d)", strerror(errno), errno);
+        return -1;
+    }
+
+    // RTS
+    memset(&attr, 0, sizeof(attr));
+    attr.qp_state = IBV_QPS_RTS;
+    attr.sq_psn = 0;
+    attr.max_rd_atomic = 1;
+    attr.timeout = 14;
+    attr.retry_cnt = 7;
+    attr.rnr_retry = 7;
+    flags = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC | 
+            IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY;
+    ret = ibv_modify_qp(ctx->qp, &attr, flags);
+    if (ret) {
+        LOG_ERROR("Failed to modify QP to RTS: %s (errno=%d)", strerror(errno), errno);
+        return -1;
+    }
+
+    LOG_DEBUG("RC QP setup completed");
+    LOG_DEBUG("        Using PKey: 0x%04x (index: %d)", pkey, pkey_index);
+    LOG_DEBUG("        Remote QPN: %u, Remote LID: %d", peer->qpn, peer->lid);
+    
+    return 0;
+}
+
+static void cleanup_ib_context(ib_context_t *ctx)
+{
+    if (ctx->mr) ibv_dereg_mr(ctx->mr);
+    if (ctx->buf) free(ctx->buf);
+    if (ctx->cq) ibv_destroy_cq(ctx->cq);
+    if (ctx->pd) ibv_dealloc_pd(ctx->pd);
+    if (ctx->dev) ibv_close_device(ctx->dev);
+    if (ctx->devname) free(ctx->devname);
+}
+
+// ユニキャスト用peer情報交換関数
+static int exchange_peer_info(ib_context_t *ctx, peer_info_t *peer)
+{
+    // 自分の情報を準備
+    peer_info_t my_info = {
+        .lid = ctx->lid,
+        .qpn = ctx->qp->qp_num,
+        .gid = ctx->gid
+    };
+    
+    LOG_DEBUG("My info - LID: %d, QPN: %u", my_info.lid, my_info.qpn);
+    
+    // Rank 0とRank 1で情報交換
+    if (mpi_rank == 0) {
+        // Rank 0: 自分の情報をRank 1に送信
+        MPI_Send(&my_info, sizeof(peer_info_t), MPI_BYTE, 1, 0, MPI_COMM_WORLD);
+        // Rank 1から情報を受信
+        MPI_Recv(peer, sizeof(peer_info_t), MPI_BYTE, 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        LOG_INFO("Received peer info from Rank 1 - LID: %d, QPN: %u", peer->lid, peer->qpn);
+    } else {
+        // Rank 1: Rank 0から情報を受信
+        MPI_Recv(peer, sizeof(peer_info_t), MPI_BYTE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        LOG_INFO("Received peer info from Rank 0 - LID: %d, QPN: %u", peer->lid, peer->qpn);
+        // 自分の情報をRank 0に送信
+        MPI_Send(&my_info, sizeof(peer_info_t), MPI_BYTE, 0, 0, MPI_COMM_WORLD);
+    }
+    
+    return 0;
+}
+
+static int post_recv(ib_context_t *ctx, int len, int num_chunks)
+{
+    struct ibv_recv_wr *wrs = NULL;
+    struct ibv_sge *sges = NULL;
+    struct ibv_recv_wr *bad_wr;
+    int chunk_size = ctx->mtu;  // RC QP: no GRH overhead
+    int ret = 0;
+    int remaining = len;
+    
+    // check the buffer size
+    if (len > BUFFER_SIZE) {
+        LOG_ERROR("Total length %d too large for buffer %d", 
+               len, BUFFER_SIZE);
+        return -1;
+    }
+    
+    LOG_DEBUG("Posting %d receive WRs for %d bytes (chunk_size=%d)", num_chunks, len, chunk_size);
+    
+    // Allocate memory
+    wrs = malloc(num_chunks * sizeof(struct ibv_recv_wr));
+    sges = malloc(num_chunks * sizeof(struct ibv_sge));
+    if (!wrs || !sges) {
+        LOG_ERROR("Failed to allocate receive buffers");
+        ret = -1;
+        goto cleanup;
+    }
+    
+    for (int i = 0; i < num_chunks; i++) {
+        int data_offset = i * chunk_size;
+        int current_len = (remaining > chunk_size) ? chunk_size : remaining;
+        
+        // Set SGE for RC QP (single SGE for data)
+        memset(&sges[i], 0, sizeof(struct ibv_sge));
+        sges[i].addr = (uintptr_t)((char*)ctx->buf + data_offset);
+        sges[i].length = current_len;
+        sges[i].lkey = ctx->mr->lkey;
+        
+        // Set WR
+        memset(&wrs[i], 0, sizeof(struct ibv_recv_wr));
+        wrs[i].wr_id = 2 + i; // Use the same WR ID as the sender
+        wrs[i].sg_list = &sges[i];
+        wrs[i].num_sge = 1;
+        
+        // Link to next WR
+        if (i < num_chunks - 1) {
+            wrs[i].next = &wrs[i + 1];
+        } else {
+            wrs[i].next = NULL;
+        }
+        
+        remaining -= current_len;
+    }
+    
+    // Post receive WR
+    ret = ibv_post_recv(ctx->qp, wrs, &bad_wr);
+    if (ret) {
+        LOG_ERROR("Failed to post receive: %s", strerror(ret));
+        goto cleanup;
+    }
+    
+    LOG_DEBUG("Posted %d receive WRs successfully", num_chunks);
+    
+cleanup:
+    if (wrs) free(wrs);
+    if (sges) free(sges);
+    
+    return -1;
+}
+
+static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chunks)
+{
+    struct ibv_send_wr *wrs = NULL;
+    struct ibv_sge *sges = NULL;
+    struct ibv_send_wr *bad_wr;
+    int chunk_size = ctx->mtu;  // RC QP: no GRH overhead
+    int ret = 0;
+    
+    LOG_DEBUG("Sending %d bytes in %d chunks (chunk_size=%d)", 
+           len, num_chunks, chunk_size);
+   
+    // Allocate memory dynamically
+    wrs = malloc(num_chunks * sizeof(struct ibv_send_wr));
+    sges = malloc(num_chunks * sizeof(struct ibv_sge));
+    if (!wrs || !sges) {
+        LOG_ERROR("Failed to allocate batch send buffers");
+        ret = -1;
+        goto cleanup;
+    }
+    
+    int remaining = len;
+    for (int i = 0; i < num_chunks; i++) {
+        int data_offset = i * chunk_size;
+        int current_len = (remaining > chunk_size) ? chunk_size : remaining;
+        
+        // Set SGE
+        memset(&sges[i], 0, sizeof(struct ibv_sge));
+        sges[i].addr = (uintptr_t)((char*)ctx->buf + data_offset);
+        sges[i].length = current_len;
+        sges[i].lkey = ctx->mr->lkey;
+        
+        // Set WR for RC QP
+        memset(&wrs[i], 0, sizeof(struct ibv_send_wr));
+        wrs[i].wr_id = 2 + i; // Unique WR ID
+        wrs[i].opcode = IBV_WR_SEND;
+        wrs[i].send_flags = (i == num_chunks - 1) ? IBV_SEND_SIGNALED : 0;
+        wrs[i].sg_list = &sges[i];
+        wrs[i].num_sge = 1;
+        
+        // Link to next WR
+        if (i < num_chunks - 1) {
+            wrs[i].next = &wrs[i + 1];
+        } else {
+            wrs[i].next = NULL;
+        }
+        
+        remaining -= current_len;
+    }
+
+    // Post batch send
+    ret = ibv_post_send(ctx->qp, wrs, &bad_wr);
+    if (ret) {
+        LOG_ERROR("Failed to post batch send: %s (errno=%d)", 
+               strerror(errno), errno);
+        goto cleanup;
+    }
+    LOG_DEBUG("Batch send posted successfully (%d chunks; wr_ids %lu-%lu)", num_chunks, wrs[0].wr_id, wrs[num_chunks-1].wr_id);
+    
+cleanup:
+    if (wrs) free(wrs);
+    if (sges) free(sges);
+    
+    return ret;
+}
+
+static int wait_for_completion(ib_context_t *ctx, int expected_wrs)
+{
+    struct ibv_wc wc;
+    int ret;
+    int timeout_counter = 0;
+    const int MAX_TIMEOUT = 10000; // 10 seconds timeout
+    int completed_wrs = 0;
+
+    LOG_DEBUG("Waiting for completion... (expected WRs: %d)", expected_wrs);
+
+    while (completed_wrs < expected_wrs) {
+        ret = ibv_poll_cq(ctx->cq, 1, &wc);
+        if (ret < 0) {
+            LOG_ERROR("CQ poll failed: %s", strerror(ret));
+            return -1;
+        }
+        if (ret == 0) {
+            timeout_counter++;
+            if (timeout_counter % 1000 == 0) {
+                LOG_INFO("Still polling... (timeout: %d ms, completed: %d/%d)", 
+                       timeout_counter, completed_wrs, expected_wrs);
+            }
+            if (timeout_counter > MAX_TIMEOUT) {
+                LOG_INFO("Timeout waiting for completion (completed: %d/%d)", 
+                       completed_wrs, expected_wrs);
+                return -1;
+            }
+            usleep(1000);  // sleep 1ms to reduce busy wait
+            continue;
+        }
+
+        LOG_DEBUG("CQ entry found: wr_id=%lu, status=%s", 
+               wc.wr_id, ibv_wc_status_str(wc.status));
+
+        if (wc.status != IBV_WC_SUCCESS) {
+            LOG_ERROR("WC error: %s", ibv_wc_status_str(wc.status));
+            return -1;
+        }
+        
+        completed_wrs++;
+        LOG_DEBUG("Received %d completion (wr_id=%lu)", completed_wrs, wc.wr_id);
+    }
+    LOG_DEBUG("Received WRs: %d, expected: %d", completed_wrs, expected_wrs);
+    return 0;
+}
+
+static int verify_received_data(ib_context_t *ctx, int size)
+{
+    char *data = (char *)ctx->buf;
+    int i;
+    int error_count = 0;
+    const int MAX_ERRORS_TO_REPORT = 10;
+    
+    LOG_DEBUG("Verifying received data (size: %d bytes)", size);
+    
+    for (i = 0; i < size; i++) {
+        if (data[i] != TEST_DATA_VALUE) {
+            error_count++;
+            if (error_count <= MAX_ERRORS_TO_REPORT) {
+                LOG_ERROR("Data mismatch at position %d: expected %d, got %d", i, TEST_DATA_VALUE, (int)data[i]);
+            }
+        }
+    }
+    
+    if (error_count > 0) {
+        LOG_ERROR("Data verification failed: %d errors out of %d bytes", error_count, size);
+        if (error_count > MAX_ERRORS_TO_REPORT) {
+            LOG_ERROR("... and %d more errors (showing first %d only)", 
+                   error_count - MAX_ERRORS_TO_REPORT, MAX_ERRORS_TO_REPORT);
+        }
+        return -1;
+    }
+    
+    LOG_DEBUG("Data verification successful: all %d bytes are correct", size);
+    return 0;
+}
+
+int main(int argc, char *argv[])
+{
+    char *dev_name = NULL;
+    int opt;
+    ib_context_t ctx = {0};
+    peer_info_t peer = {0};
+    int ret;
+    char *log_level_env;
+    perf_params_t perf_params = {
+        .warmup_iterations = 10,
+        .test_iterations = 100,
+        .size_step = 2,
+        .min_size = 1024,
+        .max_size = 1024 * 1024 * 1024
+    };
+
+    // Initialize MPI
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+
+    // Check if we have exactly 2 ranks
+    if (mpi_size != 2) {
+        if (mpi_rank == 0) {
+            fprintf(stderr, "Error: This program requires exactly 2 MPI ranks (sender and receiver)\n");
+            fprintf(stderr, "Current number of ranks: %d\n", mpi_size);
+        }
+        MPI_Finalize();
+        return 1;
+    }
+
+    // 環境変数からログレベルを設定
+    log_level_env = getenv("LOG_LEVEL");
+    if (log_level_env != NULL) {
+        if (strcmp(log_level_env, "ERROR") == 0 || strcmp(log_level_env, "0") == 0) {
+            g_log_level = LOG_LEVEL_ERROR;
+        } else if (strcmp(log_level_env, "INFO") == 0 || strcmp(log_level_env, "1") == 0) {
+            g_log_level = LOG_LEVEL_INFO;
+        } else if (strcmp(log_level_env, "DEBUG") == 0 || strcmp(log_level_env, "2") == 0) {
+            g_log_level = LOG_LEVEL_DEBUG;
+        } else {
+            LOG_ERROR("Invalid LOG_LEVEL value: %s. Using default (INFO)", log_level_env);
+            LOG_ERROR("Valid values: ERROR(0), INFO(1), DEBUG(2)");
+        }
+    }
+
+    LOG_INFO("Starting IB unicast performance test:");
+    LOG_DEBUG("Log level: %d", g_log_level);
+
+    // Parse command line arguments
+    while ((opt = getopt(argc, argv, "d:l:u:w:i:s:h")) != -1) {
+        switch (opt) {
+        case 'd':
+            dev_name = optarg;
+            break;
+        case 'l':
+            perf_params.min_size = atoi(optarg);
+            break;
+        case 'u':
+            perf_params.max_size = atoi(optarg);
+            break;
+        case 'w':
+            perf_params.warmup_iterations = atoi(optarg);
+            break;
+        case 'i':
+            perf_params.test_iterations = atoi(optarg);
+            break;
+        case 's':
+            perf_params.size_step = atoi(optarg);
+            break;
+        case 'h':
+            print_usage(argv[0]);
+            MPI_Finalize();
+            return 0;
+        default:
+            print_usage(argv[0]);
+            MPI_Finalize();
+            return 1;
+        }
+    }
+
+    if (mpi_rank == 0) {
+        LOG_INFO("Test sizes: %d to %d bytes (step: %dx)", perf_params.min_size, perf_params.max_size, perf_params.size_step);
+        LOG_INFO("Warmup iterations: %d, Test iterations: %d", perf_params.warmup_iterations, perf_params.test_iterations);
+        LOG_INFO("Rank 0: Sender, Rank 1: Receiver");
+    }
+
+    // Initialize IB context
+    ret = init_ib_context(&ctx, dev_name);
+    if (ret < 0) {
+        LOG_ERROR("Failed to initialize IB context");
+        goto cleanup;
+    }
+
+    // Create RC QP
+    ret = create_rc_qp(&ctx);
+    if (ret < 0) {
+        LOG_ERROR("Failed to create RC QP");
+        goto cleanup;
+    }
+
+    // Exchange peer information first
+    ret = exchange_peer_info(&ctx, &peer);
+    if (ret < 0) {
+        LOG_ERROR("Failed to exchange peer information");
+        goto cleanup;
+    }
+
+    // Setup RC QP with peer information
+    ret = setup_rc_qp(&ctx, &peer);
+    if (ret < 0) {
+        LOG_ERROR("Failed to setup RC QP");
+        goto cleanup;
+    }
+
+    LOG_DEBUG("Successfully initialized RC QP for unicast");
+    LOG_DEBUG("MTU: %d bytes", ctx.mtu);
+
+    // Synchronize before starting performance tests
+    MPI_Barrier(MPI_COMM_WORLD);
+    
+    if (mpi_rank == 0) {
+        LOG_INFO("Starting performance tests...");
+    }
+
+    // Run performance test suite
+    run_performance_suite(&ctx, &peer, &perf_params);
+
+    // Synchronize before cleanup
+    MPI_Barrier(MPI_COMM_WORLD);
+    LOG_DEBUG("Performance test completed");
+
+cleanup:
+    cleanup_ib_context(&ctx);
+    MPI_Finalize();
+    return ret < 0 ? 1 : 0;
+} 

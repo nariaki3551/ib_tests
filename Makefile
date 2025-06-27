@@ -1,73 +1,86 @@
-CC = gcc
+# Compiler and flags
 MPICC = mpicc
 CFLAGS = -Wall -Wextra -O2 -g
-LDFLAGS = -libverbs -lrdmacm
 MPI_LDFLAGS = -libverbs -lrdmacm
 
 # Targets
-PERF_TARGET = ib_multicast_perf
+PERF_TARGETS = ib_multicast_perf ib_ud_unicast_perf
 
 # Sources
-PERF_SOURCES = ib_multicast_perf.c
+PERF_SOURCES = ib_multicast_perf.c ib_ud_unicast_perf.c
 
 # Objects
 PERF_OBJECTS = $(PERF_SOURCES:.c=.o)
 
-# Unicast performance test
-ib_unicast_perf: ib_unicast_perf.c
-	$(MPICC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+# Default target
+all: $(PERF_TARGETS)
 
-.PHONY: all clean perf test run run-perf
+# Individual targets
+ib_multicast_perf: ib_multicast_perf.c
+	$(MPICC) $(CFLAGS) -o $@ $< $(MPI_LDFLAGS)
+	scp -P 12345 $@ snail01:/app/ib_tests/
+	scp -P 12345 $@ snail02:/app/ib_tests/
+	scp -P 12345 $@ snail03:/app/ib_tests/
+	scp -P 12345 $@ tvm01:/app/ib_tests/
+	scp -P 12345 $@ tvm02:/app/ib_tests/
 
-all: $(PERF_TARGET)
+ib_ud_unicast_perf: ib_ud_unicast_perf.c
+	$(MPICC) $(CFLAGS) -o $@ $< $(MPI_LDFLAGS)
+	scp -P 12345 $@ snail01:/app/ib_tests/
+	scp -P 12345 $@ snail02:/app/ib_tests/
+	scp -P 12345 $@ snail03:/app/ib_tests/
+	scp -P 12345 $@ tvm01:/app/ib_tests/
+	scp -P 12345 $@ tvm02:/app/ib_tests/
 
-perf: $(PERF_TARGET)
-	scp -P 12345 /app/ib_tests/$(PERF_TARGET) snail01:/app/ib_tests/
-	scp -P 12345 /app/ib_tests/$(PERF_TARGET) snail02:/app/ib_tests/
-	scp -P 12345 /app/ib_tests/$(PERF_TARGET) snail03:/app/ib_tests/
-	scp -P 12345 /app/ib_tests/$(PERF_TARGET)   tvm01:/app/ib_tests/
-	scp -P 12345 /app/ib_tests/$(PERF_TARGET)   tvm02:/app/ib_tests/
-
-test-perf: $(PERF_TARGET)
-	@echo "Running performance test..."
-	mpirun -np 4 ./$(PERF_TARGET)
-
-$(PERF_TARGET): $(PERF_OBJECTS)
-	$(MPICC) $(PERF_OBJECTS) -o $(PERF_TARGET) $(MPI_LDFLAGS)
-
-%.o: %.c
-	$(MPICC) $(CFLAGS) -c $< -o $@
-
-clean:
-	rm -f $(PERF_OBJECTS) $(PERF_TARGET) ib_unicast_perf
-
-FLAGS = --mca plm_rsh_args "-p 12345"
-
-run-perf:
+# Run performance test with specific parameters
+run-mcast:
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_0 -w 20 -i 100 \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
-	: -n 1 --host snail03:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host snail03:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
-	: -n 1 --host tvm01:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host tvm01:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
-	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -w 20 -i 100 \
-	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/$(PERF_TARGET) -d mlx5_2 -w 20 -i 100 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_0 -w 20 -i 100 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_2 -w 20 -i 100 \
+	: -n 1 --host snail03:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host snail03:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_2 -w 20 -i 100 \
+	: -n 1 --host tvm01:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host tvm01:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_2 -w 20 -i 100 \
+	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_1 -w 20 -i 100 \
+	: -n 1 --host tvm02:1   $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_multicast_perf -d mlx5_2 -w 20 -i 100
 
-run-perf-quick:
-	# mpirun -np 2 $(PERF_TARGET) -d mlx5_0 -l 1048576 -u 1048576
-	# mpirun -np 2 $(PERF_TARGET) -d mlx5_0 -l 1024 -u 1024
+run-mcast-quick:
+	# mpirun -np 2 ib_multicast_perf -d mlx5_0 -l 1048576 -u 1048576
+	# mpirun -np 2 ib_multicast_perf -d mlx5_0 -l 1024 -u 1024
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=DEBUG -- /app/ib_tests/$(PERF_TARGET) -d mlx5_0 -l 1048576 -u 1048576 -w 1 -i 2 \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=DEBUG -- /app/ib_tests/$(PERF_TARGET) -d mlx5_1 -l 1048576 -u 1048576 -w 1 -i 2 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=DEBUG -- /app/ib_tests/ib_multicast_perf -d mlx5_0 -l 1048576 -u 1048576 -w 1 -i 2 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=DEBUG -- /app/ib_tests/ib_multicast_perf -d mlx5_1 -l 1048576 -u 1048576 -w 1 -i 2
+
+# Run unicast performance test
+run-ud_unicast: ib_ud_unicast_perf
+	mpirun \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_ud_unicast_perf -d mlx5_0 -w 20 -i 100 \
+	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=ERROR -- /app/ib_tests/ib_ud_unicast_perf -d mlx5_1 -w 20 -i 100 \
+
+# Run unicast performance test with specific parameters
+run-ud_unicast-quick: ib_ud_unicast_perf
+	mpirun -np 2 -x LOG_LEVEL=DEBUG ./ib_ud_unicast_perf -d mlx5_0 -l 128 -u 128 -w 1 -i 2
 
 # Help target
 help:
 	@echo "Available targets:"
-	@echo "  all          - Build both test and performance programs"
-	@echo "  perf         - Build performance test program"
-	@echo "  test         - Run performance test (4 ranks)"
-	@echo "  clean        - Remove build artifacts"
-	@echo "  help         - Show this help message"
+	@echo "  all                - Build all targets"
+	@echo "  ib_multicast_perf  - Build multicast performance test"
+	@echo "  ib_ud_unicast_perf - Build UD unicast performance test"
+	@echo "  run-mcast          - Run multicast performance test on multiple hosts"
+	@echo "  run-mcast-quick    - Run quick multicast performance test"
+	@echo "  run-ud_unicast        - Run unicast performance test"
+	@echo "  run-ud_unicast-quick  - Run quick unicast performance test"
+	@echo "  clean              - Clean build artifacts"
+	@echo "  help               - Show this help"
+
+# Clean target
+clean:
+	rm -f $(PERF_OBJECTS) $(PERF_TARGETS)
+
+# Flags for multi-host execution
+FLAGS = --mca plm_rsh_args "-p 12345"
+
+.PHONY: all clean perf test run run-perf run-perf-quick run-unicast run-unicast-quick help

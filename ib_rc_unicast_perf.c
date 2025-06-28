@@ -217,7 +217,7 @@ static perf_result_t run_performance_test(ib_context_t *ctx, int size, perf_para
 static void run_performance_suite(ib_context_t *ctx, perf_params_t *perf_params)
 {
     int size;
-    double send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec;
+    double send_bandwidth_gbps, recv_bandwidth_gbps;
     
     print_performance_header(perf_params);
     
@@ -231,12 +231,10 @@ static void run_performance_suite(ib_context_t *ctx, perf_params_t *perf_params)
         
         // Calculate performance metrics
         double double_size = (double)size;
-        send_latency_usec = result.send_time_usec;
-        recv_latency_usec = result.recv_time_usec;
         send_bandwidth_gbps = (double_size * 1000000) / (result.send_time_usec * 1024 * 1024 * 1024);
         recv_bandwidth_gbps = (double_size * 1000000) / (result.recv_time_usec * 1024 * 1024 * 1024);
         
-        print_performance_result(size, send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec);
+        print_performance_result(size, send_bandwidth_gbps, recv_bandwidth_gbps, result.send_time_usec, result.recv_time_usec);
     }
     
     if (mpi_rank == 0) {
@@ -564,20 +562,12 @@ static int exchange_peer_info(ib_context_t *ctx, peer_info_t *peer)
     
     LOG_DEBUG("My info - LID: %d, QPN: %u", my_info.lid, my_info.qpn);
     
-    // Rank 0とRank 1で情報交換
-    if (mpi_rank == 0) {
-        // Rank 0: 自分の情報をRank 1に送信
-        MPI_Send(&my_info, sizeof(peer_info_t), MPI_BYTE, 1, 0, MPI_COMM_WORLD);
-        // Rank 1から情報を受信
-        MPI_Recv(peer, sizeof(peer_info_t), MPI_BYTE, 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        LOG_INFO("Received peer info from Rank 1 - LID: %d, QPN: %u", peer->lid, peer->qpn);
-    } else {
-        // Rank 1: Rank 0から情報を受信
-        MPI_Recv(peer, sizeof(peer_info_t), MPI_BYTE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        LOG_INFO("Received peer info from Rank 0 - LID: %d, QPN: %u", peer->lid, peer->qpn);
-        // 自分の情報をRank 0に送信
-        MPI_Send(&my_info, sizeof(peer_info_t), MPI_BYTE, 0, 0, MPI_COMM_WORLD);
-    }
+    // Exchange information with the other rank (Rank 0 <-> Rank 1)
+    int other_rank = 1 - mpi_rank;
+    MPI_Sendrecv(&my_info, sizeof(peer_info_t), MPI_BYTE, other_rank, 0,
+                 peer, sizeof(peer_info_t), MPI_BYTE, other_rank, 0,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    LOG_INFO("Received peer info from Rank %d - LID: %d, QPN: %u", other_rank, peer->lid, peer->qpn);
     
     return 0;
 }

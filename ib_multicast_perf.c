@@ -220,7 +220,7 @@ static perf_result_t run_performance_test(ib_context_t *ctx, int size, perf_para
 static void run_performance_suite(ib_context_t *ctx, perf_params_t *perf_params)
 {
     int size;
-    double send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec;
+    double send_bandwidth_gbps, recv_bandwidth_gbps;
     
     print_performance_header(perf_params);
     
@@ -234,12 +234,9 @@ static void run_performance_suite(ib_context_t *ctx, perf_params_t *perf_params)
         
         // Calculate performance metrics
         double double_size = (double)size;
-        send_latency_usec = result.send_time_usec;
-        recv_latency_usec = result.recv_time_usec;
         send_bandwidth_gbps = (double_size * 1000000) / (result.send_time_usec * 1024 * 1024 * 1024);
         recv_bandwidth_gbps = (double_size * 1000000) / (result.recv_time_usec * 1024 * 1024 * 1024);
-        
-        print_performance_result(size, send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec);
+        print_performance_result(size, send_bandwidth_gbps, recv_bandwidth_gbps, result.send_time_usec, result.recv_time_usec);
     }
     
     if (mpi_rank == 0) {

@@ -247,7 +247,7 @@ static void print_usage(const char *prog)
 {
     printf("Usage: %s [options]\n", prog);
     printf("Options:\n");
-    printf("  -d <device>      IB device name (default: first available)\n");
+    printf("  -d <device>      IB device name (required)\n");
     printf("  -l <min_size>    Minimum message size in bytes (default: 1024)\n");
     printf("  -u <max_size>    Maximum message size in bytes (default: 1073741824)\n");
     printf("  -w <warmup>      Number of warmup iterations (default: 10)\n");
@@ -264,28 +264,28 @@ static int get_ib_device(const char *dev_name, struct ibv_device **dev)
     struct ibv_device **device_list;
     int num_devices, i;
 
+    if (!dev_name) {
+        LOG_ERROR("Device name is required");
+        return -1;
+    }
+
     device_list = ibv_get_device_list(&num_devices);
     if (!device_list || !num_devices) {
         LOG_ERROR("No IB devices available");
         return -1;
     }
 
-    if (!dev_name) {
-        *dev = device_list[0];
-        LOG_INFO("Using device: %s", ibv_get_device_name(*dev));
-    } else {
-        for (i = 0; device_list[i]; ++i) {
-            if (!strcmp(ibv_get_device_name(device_list[i]), dev_name)) {
-                *dev = device_list[i];
-                LOG_INFO("Using device: %s", ibv_get_device_name(*dev));
-                break;
-            }
+    for (i = 0; device_list[i]; ++i) {
+        if (!strcmp(ibv_get_device_name(device_list[i]), dev_name)) {
+            *dev = device_list[i];
+            LOG_INFO("Using device: %s", ibv_get_device_name(*dev));
+            break;
         }
-        if (!device_list[i]) {
-            LOG_ERROR("IB device %s not found", dev_name);
-            ibv_free_device_list(device_list);
-            return -1;
-        }
+    }
+    if (!device_list[i]) {
+        LOG_ERROR("IB device %s not found", dev_name);
+        ibv_free_device_list(device_list);
+        return -1;
     }
 
     return 0;
@@ -832,6 +832,16 @@ int main(int argc, char *argv[])
             MPI_Finalize();
             return 1;
         }
+    }
+
+    // Check if device name is specified
+    if (!dev_name) {
+        if (mpi_rank == 0) {
+            fprintf(stderr, "Error: Device name (-d) is required\n");
+            print_usage(argv[0]);
+        }
+        MPI_Finalize();
+        return 1;
     }
 
     if (mpi_rank == 0) {

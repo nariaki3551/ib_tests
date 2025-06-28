@@ -45,6 +45,10 @@ typedef struct {
     uint16_t lid;
     union ibv_gid gid;
     char *devname;
+    struct ibv_send_wr *send_wrs;
+    struct ibv_recv_wr *recv_wrs;
+    struct ibv_sge *send_sges;
+    struct ibv_sge *recv_sges;
 } ib_context_t;
 
 // performance parameters structure
@@ -132,6 +136,30 @@ static void print_performance_result(int size, double send_bandwidth_gbps, doubl
     }
 }
 
+static int allocate_wrs_and_sges(ib_context_t *ctx, perf_params_t *perf_params)
+{
+    int chunk_size = ctx->mtu - GRH_HEADER_SIZE;
+    int max_num_chunks = (perf_params->max_size + chunk_size - 1) / chunk_size;  // ceil(size / chunk_size)
+    
+    ctx->send_wrs = malloc(max_num_chunks * sizeof(struct ibv_send_wr));
+    ctx->recv_wrs = malloc(max_num_chunks * sizeof(struct ibv_recv_wr));
+    ctx->send_sges = malloc(max_num_chunks * sizeof(struct ibv_sge));
+    ctx->recv_sges = malloc(max_num_chunks * 2 * sizeof(struct ibv_sge));
+    
+    if (!ctx->send_wrs || !ctx->recv_wrs || !ctx->send_sges || !ctx->recv_sges) {
+        LOG_ERROR("Failed to allocate work requests and scatter-gather elements");
+        return -1;
+    }
+    
+    // Initialize buffer with test data (only for sender rank)
+    if (mpi_rank == 0) {
+        memset(ctx->buf, TEST_DATA_VALUE, perf_params->max_size);
+    }
+    
+    LOG_DEBUG("Allocated WRs and SGEs for max %d chunks", max_num_chunks);
+    return 0;
+}
+
 static perf_result_t run_performance_test(ib_context_t *ctx, peer_info_t *peer, int size, perf_params_t *perf_params)
 {
     double start_time = 0.0, end_send_time = 0.0, end_recv_time = 0.0;
@@ -139,11 +167,6 @@ static perf_result_t run_performance_test(ib_context_t *ctx, peer_info_t *peer, 
     int chunk_size = ctx->mtu - GRH_HEADER_SIZE;
     int num_chunks = (size + chunk_size - 1) / chunk_size;  // ceil(size / chunk_size)
     perf_result_t result = {0.0, 0.0};
-
-    // set constant data to buffer
-    if (mpi_rank == 0) {
-        memset(ctx->buf, TEST_DATA_VALUE, size);
-    }
 
     // Warmup phase
     LOG_INFO("Warmup phase");
@@ -194,12 +217,11 @@ static perf_result_t run_performance_test(ib_context_t *ctx, peer_info_t *peer, 
 
 static void run_performance_suite(ib_context_t *ctx, peer_info_t *peer, perf_params_t *perf_params)
 {
-    int size;
     double send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec;
     
     print_performance_header(perf_params);
     
-    for (size = perf_params->min_size; size <= perf_params->max_size; size *= perf_params->size_step) {
+    for (int size = perf_params->min_size; size <= perf_params->max_size; size *= perf_params->size_step) {
         perf_result_t result = run_performance_test(ctx, peer, size, perf_params);
         
         if (mpi_rank == 0 && (result.send_time_usec < 0 || result.recv_time_usec < 0)) {
@@ -403,6 +425,10 @@ error:
     if (ctx->cq) ibv_destroy_cq(ctx->cq);
     if (ctx->pd) ibv_dealloc_pd(ctx->pd);
     if (ctx->dev) ibv_close_device(ctx->dev);
+    if (ctx->send_wrs) free(ctx->send_wrs);
+    if (ctx->recv_wrs) free(ctx->recv_wrs);
+    if (ctx->send_sges) free(ctx->send_sges);
+    if (ctx->recv_sges) free(ctx->recv_sges);
     return 1;
 }
 
@@ -529,6 +555,10 @@ static void cleanup_ib_context(ib_context_t *ctx)
     if (ctx->pd) ibv_dealloc_pd(ctx->pd);
     if (ctx->dev) ibv_close_device(ctx->dev);
     if (ctx->devname) free(ctx->devname);
+    if (ctx->send_wrs) free(ctx->send_wrs);
+    if (ctx->recv_wrs) free(ctx->recv_wrs);
+    if (ctx->send_sges) free(ctx->send_sges);
+    if (ctx->recv_sges) free(ctx->recv_sges);
 }
 
 static int exchange_peer_info(ib_context_t *ctx, peer_info_t *peer)
@@ -561,8 +591,8 @@ static int exchange_peer_info(ib_context_t *ctx, peer_info_t *peer)
 
 static int post_recv(ib_context_t *ctx, int len, int num_chunks)
 {
-    struct ibv_recv_wr *wrs = NULL;
-    struct ibv_sge *sges = NULL;
+    struct ibv_recv_wr *wrs = ctx->recv_wrs;
+    struct ibv_sge *sges = ctx->recv_sges;
     struct ibv_recv_wr *bad_wr;
     int chunk_size = ctx->mtu - GRH_HEADER_SIZE;
     int ret = 0;
@@ -575,15 +605,6 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks)
     }
     
     LOG_DEBUG("Posting %d receive WRs for %d bytes (chunk_size=%d)", num_chunks, len, chunk_size);
-    
-    // Allocate memory
-    wrs = malloc(num_chunks * sizeof(struct ibv_recv_wr));
-    sges = malloc(num_chunks * 2 * sizeof(struct ibv_sge));
-    if (!wrs || !sges) {
-        LOG_ERROR("Failed to allocate receive buffers");
-        ret = -1;
-        goto cleanup;
-    }
     
     for (int i = 0; i < num_chunks; i++) {
         int data_offset = i * chunk_size;
@@ -619,58 +640,24 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks)
     ret = ibv_post_recv(ctx->qp, wrs, &bad_wr);
     if (ret) {
         LOG_ERROR("Failed to post receive: %s", strerror(ret));
-        goto cleanup;
+        return ret;
     }
     
     LOG_DEBUG("Posted %d receive WRs successfully", num_chunks);
-    
-cleanup:
-    if (wrs) free(wrs);
-    if (sges) free(sges);
     
     return ret;
 }
 
 static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chunks)
 {
-    struct ibv_send_wr *wrs = NULL;
-    struct ibv_sge *sges = NULL;
-    struct ibv_ah_attr ah_attr;
-    struct ibv_ah *ah = NULL;
+    struct ibv_send_wr *wrs = ctx->send_wrs;
+    struct ibv_sge *sges = ctx->send_sges;
     struct ibv_send_wr *bad_wr;
     int chunk_size = ctx->mtu - GRH_HEADER_SIZE;
     int ret = 0;
     
     LOG_DEBUG("Sending %d bytes in %d chunks (chunk_size=%d)", 
            len, num_chunks, chunk_size);
-   
-    // Allocate memory dynamically
-    wrs = malloc(num_chunks * sizeof(struct ibv_send_wr));
-    sges = malloc(num_chunks * sizeof(struct ibv_sge));
-    if (!wrs || !sges) {
-        LOG_ERROR("Failed to allocate batch send buffers");
-        ret = -1;
-        goto cleanup;
-    }
-    
-    // Create address handle for unicast
-    memset(&ah_attr, 0, sizeof(ah_attr));
-    ah_attr.is_global = 1;
-    ah_attr.port_num = ctx->ib_port;
-    ah_attr.grh.dgid = peer->gid;
-    ah_attr.grh.sgid_index = 0;
-    ah_attr.grh.flow_label = 0;
-    ah_attr.grh.hop_limit = 1;
-    ah_attr.grh.traffic_class = 0;
-    ah_attr.dlid = peer->lid;
-    ah_attr.sl = 0;
-    
-    ah = ibv_create_ah(ctx->pd, &ah_attr);
-    if (!ah) {
-        LOG_ERROR("Failed to create address handle: %s (errno=%d)", 
-               strerror(errno), errno);
-        goto cleanup;
-    }
     
     int remaining = len;
     for (int i = 0; i < num_chunks; i++) {
@@ -692,7 +679,7 @@ static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chun
         wrs[i].num_sge = 1;
         wrs[i].wr.ud.remote_qpn = peer->qpn;
         wrs[i].wr.ud.remote_qkey = DEF_QKEY;
-        wrs[i].wr.ud.ah = ah;
+        wrs[i].wr.ud.ah = ctx->ah;
         
         // Link to next WR
         if (i < num_chunks - 1) {
@@ -706,21 +693,12 @@ static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chun
     // Post batch send
     ret = ibv_post_send(ctx->qp, wrs, &bad_wr);
     if (ret) {
-        LOG_ERROR("Failed to post batch send: %s (errno=%d)", 
-               strerror(errno), errno);
-        goto cleanup;
+        LOG_ERROR("Failed to post batch send: %s (errno=%d)", strerror(errno), errno);
+        return ret;
     }
     LOG_DEBUG("Batch send posted successfully (%d chunks; wr_ids %lu-%lu)", num_chunks, wrs[0].wr_id, wrs[num_chunks-1].wr_id);
-    
-    // Save AH for cleanup
-    ctx->ah = ah;
-    
-cleanup:
-    if (wrs) free(wrs);
-    if (sges) free(sges);
-    if (ret < 0 && ah) ibv_destroy_ah(ah);
-    
-    return 1;
+
+    return ret;
 }
 
 static int wait_for_completion(ib_context_t *ctx, int expected_wrs)
@@ -797,6 +775,31 @@ static int verify_received_data(ib_context_t *ctx, int size)
     }
     
     LOG_DEBUG("Data verification successful: all %d bytes are correct", size);
+    return 0;
+}
+
+static int create_ah(ib_context_t *ctx, peer_info_t *peer)
+{
+    struct ibv_ah_attr ah_attr;
+    
+    memset(&ah_attr, 0, sizeof(ah_attr));
+    ah_attr.is_global = 1;
+    ah_attr.port_num = ctx->ib_port;
+    ah_attr.grh.dgid = peer->gid;
+    ah_attr.grh.sgid_index = 0;
+    ah_attr.grh.flow_label = 0;
+    ah_attr.grh.hop_limit = 1;
+    ah_attr.grh.traffic_class = 0;
+    ah_attr.dlid = peer->lid;
+    ah_attr.sl = 0;
+
+    ctx->ah = ibv_create_ah(ctx->pd, &ah_attr);
+    if (!ctx->ah) {
+        LOG_ERROR("Failed to create AH");
+        return -1;
+    }
+    
+    LOG_DEBUG("AH created successfully");
     return 0;
 }
 
@@ -912,6 +915,20 @@ int main(int argc, char *argv[])
     ret = setup_ud_qp(&ctx);
     if (ret < 0) {
         LOG_ERROR("Failed to setup QP");
+        goto cleanup;
+    }
+
+    // Create Address Handle
+    ret = create_ah(&ctx, &peer);
+    if (ret < 0) {
+        LOG_ERROR("Failed to create AH");
+        goto cleanup;
+    }
+
+    // Allocate work requests and sges
+    ret = allocate_wrs_and_sges(&ctx, &perf_params);
+    if (ret < 0) {
+        LOG_ERROR("Failed to allocate work requests and sges");
         goto cleanup;
     }
 

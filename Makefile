@@ -107,4 +107,4 @@ clean:
 # Flags for multi-host execution
 FLAGS = --mca plm_rsh_args "-p 12345"
 
-.PHONY: all clean perf test run run-perf run-perf-quick run-ud-unicast run-ud-unicast-quick run-rc-unicast run-rc-unicast-quick help
+.PHONY: all clean perf test run-ud-unicast run-ud-unicast-quick run-rc-unicast run-rc-unicast-quick help

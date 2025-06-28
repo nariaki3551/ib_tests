@@ -38,10 +38,14 @@ typedef struct {
     void *buf;
     int ib_port;
     int mtu;
-    int mtu_enum; // enum値
+    int mtu_enum;
     uint16_t lid;
     union ibv_gid gid;
     char *devname;
+    struct ibv_send_wr *send_wrs;
+    struct ibv_recv_wr *recv_wrs;
+    struct ibv_sge *send_sges;
+    struct ibv_sge *recv_sges;
 } ib_context_t;
 
 // performance parameters structure
@@ -92,6 +96,7 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks);
 static int post_send(ib_context_t *ctx, int len, int num_chunks);
 static int wait_for_completion(ib_context_t *ctx, int expected_wrs);
 static int verify_received_data(ib_context_t *ctx, int size);
+static int allocate_wrs_and_sges(ib_context_t *ctx, perf_params_t *perf_params);
 
 static void print_performance_header(perf_params_t *perf_params)
 {
@@ -129,6 +134,30 @@ static void print_performance_result(int size, double send_bandwidth_gbps, doubl
     }
 }
 
+static int allocate_wrs_and_sges(ib_context_t *ctx, perf_params_t *perf_params)
+{
+    int chunk_size = ctx->mtu;
+    int max_num_chunks = (perf_params->max_size + chunk_size - 1) / chunk_size;  // ceil(size / chunk_size)
+    
+    ctx->send_wrs = malloc(max_num_chunks * sizeof(struct ibv_send_wr));
+    ctx->recv_wrs = malloc(max_num_chunks * sizeof(struct ibv_recv_wr));
+    ctx->send_sges = malloc(max_num_chunks * sizeof(struct ibv_sge));
+    ctx->recv_sges = malloc(max_num_chunks * sizeof(struct ibv_sge));
+    
+    if (!ctx->send_wrs || !ctx->recv_wrs || !ctx->send_sges || !ctx->recv_sges) {
+        LOG_ERROR("Failed to allocate work requests and scatter-gather elements");
+        return -1;
+    }
+    
+    // Initialize buffer with test data (only for sender rank)
+    if (mpi_rank == 0) {
+        memset(ctx->buf, TEST_DATA_VALUE, perf_params->max_size);
+    }
+    
+    LOG_DEBUG("Allocated WRs and SGEs for max %d chunks", max_num_chunks);
+    return 0;
+}
+
 static perf_result_t run_performance_test(ib_context_t *ctx, int size, perf_params_t *perf_params)
 {
     double start_time = 0.0, end_send_time = 0.0, end_recv_time = 0.0;
@@ -136,11 +165,6 @@ static perf_result_t run_performance_test(ib_context_t *ctx, int size, perf_para
     int chunk_size = ctx->mtu;
     int num_chunks = (size + chunk_size - 1) / chunk_size;  // ceil(size / chunk_size)
     perf_result_t result = {0.0, 0.0};
-
-    // set constant data to buffer
-    if (mpi_rank == 0) {
-        memset(ctx->buf, TEST_DATA_VALUE, size);
-    }
 
     // Warmup phase
     LOG_INFO("Warmup phase");
@@ -384,6 +408,10 @@ error:
     if (ctx->cq) ibv_destroy_cq(ctx->cq);
     if (ctx->pd) ibv_dealloc_pd(ctx->pd);
     if (ctx->dev) ibv_close_device(ctx->dev);
+    if (ctx->send_wrs) free(ctx->send_wrs);
+    if (ctx->recv_wrs) free(ctx->recv_wrs);
+    if (ctx->send_sges) free(ctx->send_sges);
+    if (ctx->recv_sges) free(ctx->recv_sges);
     return 1;
 }
 
@@ -520,6 +548,10 @@ static void cleanup_ib_context(ib_context_t *ctx)
     if (ctx->pd) ibv_dealloc_pd(ctx->pd);
     if (ctx->dev) ibv_close_device(ctx->dev);
     if (ctx->devname) free(ctx->devname);
+    if (ctx->send_wrs) free(ctx->send_wrs);
+    if (ctx->recv_wrs) free(ctx->recv_wrs);
+    if (ctx->send_sges) free(ctx->send_sges);
+    if (ctx->recv_sges) free(ctx->recv_sges);
 }
 
 static int exchange_peer_info(ib_context_t *ctx, peer_info_t *peer)
@@ -552,9 +584,9 @@ static int exchange_peer_info(ib_context_t *ctx, peer_info_t *peer)
 
 static int post_recv(ib_context_t *ctx, int len, int num_chunks)
 {
-    struct ibv_recv_wr *wrs = NULL;
-    struct ibv_sge *sges = NULL;
-    struct ibv_recv_wr *bad_wr;
+    struct ibv_recv_wr *wrs = ctx->recv_wrs;
+    struct ibv_sge *sges = ctx->recv_sges;
+    struct ibv_recv_wr *bad_wr = NULL;
     int chunk_size = ctx->mtu;  // RC QP: no GRH overhead
     int ret = 0;
     int remaining = len;
@@ -566,15 +598,6 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks)
     }
     
     LOG_DEBUG("Posting %d receive WRs for %d bytes (chunk_size=%d)", num_chunks, len, chunk_size);
-    
-    // Allocate memory
-    wrs = malloc(num_chunks * sizeof(struct ibv_recv_wr));
-    sges = malloc(num_chunks * sizeof(struct ibv_sge));
-    if (!wrs || !sges) {
-        LOG_ERROR("Failed to allocate receive buffers");
-        ret = -1;
-        goto cleanup;
-    }
     
     for (int i = 0; i < num_chunks; i++) {
         int data_offset = i * chunk_size;
@@ -605,38 +628,25 @@ static int post_recv(ib_context_t *ctx, int len, int num_chunks)
     ret = ibv_post_recv(ctx->qp, wrs, &bad_wr);
     if (ret) {
         LOG_ERROR("Failed to post receive: %s", strerror(ret));
-        goto cleanup;
+        return ret;
     }
     
     LOG_DEBUG("Posted %d receive WRs successfully", num_chunks);
-    
-cleanup:
-    if (wrs) free(wrs);
-    if (sges) free(sges);
     
     return ret;
 }
 
 static int post_send(ib_context_t *ctx, int len, int num_chunks)
 {
-    struct ibv_send_wr *wrs = NULL;
-    struct ibv_sge *sges = NULL;
-    struct ibv_send_wr *bad_wr;
+    struct ibv_send_wr *wrs = ctx->send_wrs;
+    struct ibv_sge *sges = ctx->send_sges;
+    struct ibv_send_wr *bad_wr = NULL;
     int chunk_size = ctx->mtu;  // RC QP: no GRH overhead
     int ret = 0;
     
     LOG_DEBUG("Sending %d bytes in %d chunks (chunk_size=%d)", 
            len, num_chunks, chunk_size);
    
-    // Allocate memory dynamically
-    wrs = malloc(num_chunks * sizeof(struct ibv_send_wr));
-    sges = malloc(num_chunks * sizeof(struct ibv_sge));
-    if (!wrs || !sges) {
-        LOG_ERROR("Failed to allocate batch send buffers");
-        ret = -1;
-        goto cleanup;
-    }
-    
     int remaining = len;
     for (int i = 0; i < num_chunks; i++) {
         int data_offset = i * chunk_size;
@@ -669,13 +679,10 @@ static int post_send(ib_context_t *ctx, int len, int num_chunks)
     ret = ibv_post_send(ctx->qp, wrs, &bad_wr);
     if (ret) {
         LOG_ERROR("Failed to post batch send: %s (errno=%d)", strerror(errno), errno);
-        goto cleanup;
+        return ret;
     }
     LOG_DEBUG("Batch send posted successfully (%d chunks; wr_ids %lu-%lu)", num_chunks, wrs[0].wr_id, wrs[num_chunks-1].wr_id);
     
-cleanup:
-    if (wrs) free(wrs);
-    if (sges) free(sges);
     return ret;
 }
 
@@ -868,6 +875,13 @@ int main(int argc, char *argv[])
     ret = setup_rc_qp(&ctx, &peer);
     if (ret < 0) {
         LOG_ERROR("Failed to setup QP");
+        goto cleanup;
+    }
+
+    // Allocate work requests and sges
+    ret = allocate_wrs_and_sges(&ctx, &perf_params);
+    if (ret < 0) {
+        LOG_ERROR("Failed to allocate work requests and sges");
         goto cleanup;
     }
 

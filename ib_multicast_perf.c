@@ -666,24 +666,23 @@ static int join_multicast_generic(struct sockaddr_storage *ipoib_addr,
                                   mcast_info_t *mcast_info,
                                   int is_root)
 {
-    struct rdma_cm_id *mcast_id;
-    struct rdma_event_channel *channel;
+    struct rdma_cm_id *mcast_id = NULL;
+    struct rdma_event_channel *channel = NULL;
     struct sockaddr_in6 addr;
-    int ret;
+    int ret = 0;
 
     // Create event channel
     channel = rdma_create_event_channel();
     if (!channel) {
-        perror("rdma_create_event_channel failed");
+        LOG_ERROR("rdma_create_event_channel failed: %s", strerror(errno));
         return -1;
     }
 
     // Create multicast RDMA ID
     ret = rdma_create_id(channel, &mcast_id, NULL, RDMA_PS_UDP);
     if (ret) {
-        perror("rdma_create_id failed");
-        rdma_destroy_event_channel(channel);
-        return ret;
+        LOG_ERROR("rdma_create_id failed: %s", strerror(ret));
+        goto cleanup;
     }
 
     // Set up multicast address
@@ -694,58 +693,40 @@ static int join_multicast_generic(struct sockaddr_storage *ipoib_addr,
         // For root: use fake address string
         if (inet_pton(AF_INET6, mcast_addr_str, &addr.sin6_addr) != 1) {
             LOG_ERROR("Invalid fake multicast address: %s", mcast_addr_str);
-            rdma_destroy_ep(mcast_id);
-            rdma_destroy_event_channel(channel);
-            return -1;
+            ret = -1;
+            goto cleanup;
         }
     } else {
         // For others: use real GID
         memcpy(&addr.sin6_addr, dgid->raw, sizeof(dgid->raw));
     }
 
-    LOG_DEBUG("Created RDMA ID successfully");
-
     // Bind to the IPoIB address
     ret = rdma_bind_addr(mcast_id, (struct sockaddr *)ipoib_addr);
     if (ret) {
-        perror("rdma_bind_addr failed");
-        rdma_destroy_ep(mcast_id);
-        rdma_destroy_event_channel(channel);
-        return ret;
+        LOG_ERROR("rdma_bind_addr failed: %s", strerror(ret));
+        goto cleanup;
     }
-
-    LOG_DEBUG("RDMA ID %p, Address binding %s", mcast_id, mcast_addr_str);
 
     // Join the multicast group
     ret = rdma_join_multicast(mcast_id, (struct sockaddr *)&addr, NULL);
     if (ret) {
-        perror("rdma_join_multicast failed");
-        rdma_destroy_ep(mcast_id);
-        rdma_destroy_event_channel(channel);
-        return ret;
+        LOG_ERROR("rdma_join_multicast failed: %s", strerror(ret));
+        goto cleanup;
     }
-
-    LOG_DEBUG("Multicast group join initiated");
 
     // Wait for join completion
     ret = rdma_get_cm_event(channel, &event);
     if (ret) {
-        perror("rdma_get_cm_event failed");
-        rdma_destroy_ep(mcast_id);
-        rdma_destroy_event_channel(channel);
-        return ret;
-    }
-
-    if (!is_root) {
-        LOG_DEBUG("CM event received: %s", rdma_event_str(event->event));
+        LOG_ERROR("rdma_get_cm_event failed: %s", strerror(ret));
+        goto cleanup;
     }
 
     if (event->event != RDMA_CM_EVENT_MULTICAST_JOIN) {
         LOG_ERROR("Unexpected event: %s", rdma_event_str(event->event));
         rdma_ack_cm_event(event);
-        rdma_destroy_ep(mcast_id);
-        rdma_destroy_event_channel(channel);
-        return -1;
+        ret = -1;
+        goto cleanup;
     }
 
     LOG_DEBUG("Successfully joined multicast group");
@@ -757,35 +738,43 @@ static int join_multicast_generic(struct sockaddr_storage *ipoib_addr,
         
         // Convert GID to string
         if (inet_ntop(AF_INET6, mcast_info->dgid.raw, mcast_info->addr_str, INET6_ADDRSTRLEN)) {
-            LOG_DEBUG("Actual multicast address: %s", mcast_info->addr_str);
-            LOG_DEBUG("MLID: 0x%x", mcast_info->mlid);
+            LOG_DEBUG("Actual multicast address: %s, MLID: 0x%x", 
+                     mcast_info->addr_str, mcast_info->mlid);
         }
-        
-        rdma_ack_cm_event(event);
-        rdma_destroy_ep(mcast_id);
-        rdma_destroy_event_channel(channel);
     } else {
-        // For non-root ranks: check details and store ID
+        // For non-root ranks: store ID for later use
         LOG_DEBUG("Multicast join details - MLID: 0x%x, GID: %s", 
                event->param.ud.ah_attr.dlid, mcast_info->addr_str);
-        
-        rdma_ack_cm_event(event);
-        
-        // Store the multicast ID for later use
         mcast_cm_id = mcast_id;
+        mcast_id = NULL; // Prevent cleanup
     }
     
+    rdma_ack_cm_event(event);
     return 0;
+
+cleanup:
+    if (event) {
+        rdma_ack_cm_event(event);
+    }
+    if (mcast_id) {
+        rdma_destroy_ep(mcast_id);
+    }
+    if (channel) {
+        rdma_destroy_event_channel(channel);
+    }
+    return ret;
 }
 
 static int root_join_multicast(struct sockaddr_storage *ipoib_addr, mcast_info_t *mcast_info)
 {
-    return join_multicast_generic(ipoib_addr, FAKE_MCAST_ADDR, NULL, mcast_info, 1);
+    int is_root = 1;
+    return join_multicast_generic(ipoib_addr, FAKE_MCAST_ADDR, NULL, mcast_info, is_root);
 }
 
 static int all_join_multicast_real(struct sockaddr_storage *ipoib_addr, mcast_info_t *mcast_info)
 {
-    return join_multicast_generic(ipoib_addr, mcast_info->addr_str, &mcast_info->dgid, mcast_info, 0);
+    int is_root = 0;
+    return join_multicast_generic(ipoib_addr, mcast_info->addr_str, &mcast_info->dgid, mcast_info, is_root);
 }
 
 static int post_recv(ib_context_t *ctx, int len, int num_chunks)
@@ -944,36 +933,6 @@ static int wait_for_completion(ib_context_t *ctx, int expected_wrs)
         LOG_DEBUG("Received %d completion (wr_id=%lu)", completed_wrs, wc.wr_id);
     }
     LOG_DEBUG("Received WRs: %d, expected: %d", completed_wrs, expected_wrs);
-    return 0;
-}
-
-static int attach_qp_to_multicast(ib_context_t *ctx, mcast_info_t *mcast_info)
-{
-    int ret;
-    
-    ret = ibv_attach_mcast(ctx->qp, &mcast_info->dgid, mcast_info->mlid);
-    if (ret) {
-        LOG_ERROR("Failed to attach QP to multicast group: %s (errno=%d)", 
-               strerror(errno), errno);
-        return ret;
-    }
-    
-    LOG_DEBUG("QP attached to multicast group successfully");
-    return 0;
-}
-
-static int detach_qp_from_multicast(ib_context_t *ctx, mcast_info_t *mcast_info)
-{
-    int ret;
-    
-    ret = ibv_detach_mcast(ctx->qp, &mcast_info->dgid, mcast_info->mlid);
-    if (ret) {
-        LOG_ERROR("Failed to detach QP from multicast group: %s (errno=%d)", 
-               strerror(errno), errno);
-        return ret;
-    }
-    
-    LOG_DEBUG("QP detached from multicast group successfully");
     return 0;
 }
 
@@ -1142,9 +1101,9 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    // Get IPoIB address
-    struct in_addr ip_addr = {0}; // Initialize to zero
-    ret = get_ipv4_from_ib_device(dev_name ? dev_name : "mlx5_0", &ip_addr);
+    // Get IPoIB address and setup multicast
+    struct in_addr ip_addr = {0};
+    ret = get_ipv4_from_ib_device(dev_name, &ip_addr);
     if (ret < 0) {
         LOG_ERROR("Failed to get IPoIB address");
         goto cleanup;
@@ -1155,7 +1114,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in *addr_in = (struct sockaddr_in *)&ip_oib_addr;
     addr_in->sin_family = AF_INET;
     addr_in->sin_addr = ip_addr;
-    addr_in->sin_port = 0; // Let the system choose a port
+    addr_in->sin_port = 0;
 
     // Root rank: Join multicast with fake address and get real address
     if (mpi_rank == 0) {
@@ -1170,9 +1129,8 @@ int main(int argc, char *argv[])
     MPI_Bcast(&mcast_info, sizeof(mcast_info_t), MPI_BYTE, 0, MPI_COMM_WORLD);
     
     if (mpi_rank != 0) {
-        LOG_DEBUG("Received multicast info from root");
-        LOG_DEBUG("Real address: %s", mcast_info.addr_str);
-        LOG_DEBUG("MLID: 0x%x", mcast_info.mlid);
+        LOG_DEBUG("Received multicast info: %s, MLID: 0x%x", 
+                 mcast_info.addr_str, mcast_info.mlid);
     }
 
     // All ranks: Join multicast with real address
@@ -1183,11 +1141,13 @@ int main(int argc, char *argv[])
     }
 
     // Attach QP to multicast group
-    ret = attach_qp_to_multicast(&ctx, &mcast_info);
-    if (ret < 0) {
-        LOG_ERROR("Failed to attach QP to multicast");
+    ret = ibv_attach_mcast(ctx.qp, &mcast_info.dgid, mcast_info.mlid);
+    if (ret) {
+        LOG_ERROR("Failed to attach QP to multicast group: %s (errno=%d)", 
+               strerror(errno), errno);
         goto cleanup;
     }
+    LOG_DEBUG("QP attached to multicast group successfully");
 
     // Create Address Handle
     ret = create_ah(&ctx, &mcast_info);
@@ -1227,7 +1187,11 @@ int main(int argc, char *argv[])
 cleanup:
     // Detach QP from multicast group
     if (ctx.qp && mcast_info.addr_str[0] != '\0') {
-        detach_qp_from_multicast(&ctx, &mcast_info);
+        ret = ibv_detach_mcast(ctx.qp, &mcast_info.dgid, mcast_info.mlid);
+        if (ret < 0) {
+            LOG_ERROR("Failed to detach QP from multicast group");
+        }
+        LOG_DEBUG("QP detached from multicast group successfully");
     }
     
     if (mcast_cm_id) {

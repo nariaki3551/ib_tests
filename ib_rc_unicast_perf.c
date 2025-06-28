@@ -259,6 +259,20 @@ static void print_usage(const char *prog)
     printf("\nNote: This program requires exactly 2 MPI ranks (sender and receiver)\n");
 }
 
+static void cleanup_ib_context(ib_context_t *ctx)
+{
+    if (ctx->mr) ibv_dereg_mr(ctx->mr);
+    if (ctx->buf) free(ctx->buf);
+    if (ctx->cq) ibv_destroy_cq(ctx->cq);
+    if (ctx->pd) ibv_dealloc_pd(ctx->pd);
+    if (ctx->dev) ibv_close_device(ctx->dev);
+    if (ctx->devname) free(ctx->devname);
+    if (ctx->send_wrs) free(ctx->send_wrs);
+    if (ctx->recv_wrs) free(ctx->recv_wrs);
+    if (ctx->send_sges) free(ctx->send_sges);
+    if (ctx->recv_sges) free(ctx->recv_sges);
+}
+
 static int get_ib_device(const char *dev_name, struct ibv_device **dev)
 {
     struct ibv_device **device_list;
@@ -401,15 +415,7 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
     return 0;
 
 error:
-    if (ctx->mr) ibv_dereg_mr(ctx->mr);
-    if (ctx->buf) free(ctx->buf);
-    if (ctx->cq) ibv_destroy_cq(ctx->cq);
-    if (ctx->pd) ibv_dealloc_pd(ctx->pd);
-    if (ctx->dev) ibv_close_device(ctx->dev);
-    if (ctx->send_wrs) free(ctx->send_wrs);
-    if (ctx->recv_wrs) free(ctx->recv_wrs);
-    if (ctx->send_sges) free(ctx->send_sges);
-    if (ctx->recv_sges) free(ctx->recv_sges);
+    cleanup_ib_context(ctx);
     return 1;
 }
 
@@ -536,20 +542,6 @@ static int setup_rc_qp(ib_context_t *ctx, peer_info_t *peer)
     LOG_DEBUG("        Remote QPN: %u, Remote LID: %d", peer->qpn, peer->lid);
     
     return 0;
-}
-
-static void cleanup_ib_context(ib_context_t *ctx)
-{
-    if (ctx->mr) ibv_dereg_mr(ctx->mr);
-    if (ctx->buf) free(ctx->buf);
-    if (ctx->cq) ibv_destroy_cq(ctx->cq);
-    if (ctx->pd) ibv_dealloc_pd(ctx->pd);
-    if (ctx->dev) ibv_close_device(ctx->dev);
-    if (ctx->devname) free(ctx->devname);
-    if (ctx->send_wrs) free(ctx->send_wrs);
-    if (ctx->recv_wrs) free(ctx->recv_wrs);
-    if (ctx->send_sges) free(ctx->send_sges);
-    if (ctx->recv_sges) free(ctx->recv_sges);
 }
 
 static int exchange_peer_info(ib_context_t *ctx, peer_info_t *peer)
@@ -890,9 +882,7 @@ int main(int argc, char *argv[])
     // Synchronize before starting performance tests
     MPI_Barrier(MPI_COMM_WORLD);
     
-    if (mpi_rank == 0) {
-        LOG_INFO("Starting performance tests...");
-    }
+    LOG_INFO("Starting performance tests...");
 
     // Run performance test suite
     run_performance_suite(&ctx, &perf_params);

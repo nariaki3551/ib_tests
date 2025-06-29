@@ -52,29 +52,29 @@ perf-cuda: run-mcast-cuda run-ud_unicast-cuda run-rc_unicast-cuda
 # ------------------------------------------------------------------------------------------------------------------------------------
 run-mcast-host: ib_perf_multicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -w 20 -i 100 -m host \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host \
-	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host \
-	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host \
-	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host \
-	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host \
-	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host \
-	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host -l 1024 -u 33554432 \
 
 run-mcast-cuda: ib_perf_multicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -w 20 -i 100 -m cuda -g 2 \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 3 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 \
-	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 \
-	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 \
-	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 \
-	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 \
-	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 \
-	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -w 20 -i 100 -m cuda -g 2 -l 1024 -u 33554432 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 3 -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
+	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
+	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
+	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
+	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
+	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
+	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
 
 test-mcast-host: ib_perf_multicast
 	mpirun \
@@ -91,13 +91,13 @@ test-mcast-cuda: ib_perf_multicast
 # ------------------------------------------------------------------------------------------------------------------------------------
 run-ud_unicast-host: ib_perf_ud_unicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_0 -w 20 -i 100 -m host \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_1 -w 20 -i 100 -m host \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_0 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
 
 run-ud_unicast-cuda: ib_perf_ud_unicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_0 -w 20 -i 100 -m cuda -g 0 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_1 -w 20 -i 100 -m cuda -g 1 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_0 -w 20 -i 100 -m cuda -g 2 -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_1 -w 20 -i 100 -m cuda -g 3 -l 1024 -u 33554432 \
 
 test-ud_unicast-host: ib_perf_ud_unicast
 	mpirun \
@@ -114,13 +114,13 @@ test-ud_unicast-cuda: ib_perf_ud_unicast
 # ------------------------------------------------------------------------------------------------------------------------------------
 run-rc_unicast-host: ib_perf_rc_unicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_0 -w 20 -i 100 -m host \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_1 -w 20 -i 100 -m host \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_0 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
 
 run-rc_unicast-cuda: ib_perf_rc_unicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_0 -w 20 -i 100 -m cuda -g 0 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_1 -w 20 -i 100 -m cuda -g 1 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_0 -w 20 -i 100 -m cuda -g 2 -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_1 -w 20 -i 100 -m cuda -g 3 -l 1024 -u 33554432 \
 
 test-rc_unicast-host: ib_perf_rc_unicast
 	mpirun \

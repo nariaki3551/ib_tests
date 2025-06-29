@@ -51,13 +51,20 @@ typedef struct {
     struct ibv_sge *recv_sges;
 } ib_context_t;
 
+// Memory type enumeration
+typedef enum {
+    MEM_TYPE_HOST = 0,
+    MEM_TYPE_CUDA = 1
+} mem_type_t;
+
 // performance parameters structure
 typedef struct {
     int warmup_iterations;
     int test_iterations;
-    int size_step;
     int min_size;
     int max_size;
+    int size_step;
+    mem_type_t mem_type;
 } perf_params_t;
 
 // performance result structure
@@ -66,9 +73,17 @@ typedef struct {
     double recv_time_usec;
 } perf_result_t;
 
+const char *mem_type_to_str(mem_type_t mem_type) {
+    switch (mem_type) {
+        case MEM_TYPE_HOST: return "Host";
+        case MEM_TYPE_CUDA: return "CUDA";
+        default: return "Unknown";
+    }
+}
+
 // Global variables
-static int mpi_rank;
-static int mpi_size;
+static int mpi_rank = 0;
+static int mpi_size = 0;
 static const char TEST_DATA_VALUE = 3;
 
 // Log level definition
@@ -77,7 +92,7 @@ typedef enum {
     LOG_LEVEL_INFO = 1,
     LOG_LEVEL_DEBUG = 2,
 } log_level_t;
-static log_level_t g_log_level = LOG_LEVEL_INFO;
+static log_level_t g_log_level = LOG_LEVEL_ERROR;
 
 #define LOG_ERROR(fmt, ...) \
     do { if (g_log_level >= LOG_LEVEL_ERROR) fprintf(stderr, "\033[31mRank %d: " fmt " [%s:%s:%d]\033[0m\n", mpi_rank, ##__VA_ARGS__, __FILE__, __func__, __LINE__); } while (0)
@@ -169,7 +184,7 @@ static perf_result_t run_performance_test(ib_context_t *ctx, peer_info_t *peer, 
     perf_result_t result = {0.0, 0.0};
 
     // Warmup phase
-    LOG_INFO("Warmup phase");
+    LOG_INFO("Warmup phase: %s", mem_type_to_str(perf_params->mem_type));
     for (int i = 0; i < perf_params->warmup_iterations; i++) {
         LOG_INFO("Warmup iteration start [%d/%d]", i+1, perf_params->warmup_iterations);
         if (mpi_rank > 0) {
@@ -188,7 +203,7 @@ static perf_result_t run_performance_test(ib_context_t *ctx, peer_info_t *peer, 
     }
 
     // Measurement phase
-    LOG_INFO("Measurement phase");
+    LOG_INFO("Measurement phase: %s", mem_type_to_str(perf_params->mem_type));
     for (int i = 0; i < perf_params->test_iterations; i++) {
         LOG_INFO("Measurement iteration start [%d/%d]", i+1, perf_params->test_iterations);
         if (mpi_rank > 0) {
@@ -243,20 +258,23 @@ static void run_performance_suite(ib_context_t *ctx, peer_info_t *peer, perf_par
     }
 }
 
-static void print_usage(const char *prog)
+static void print_usage(const char *prog_name)
 {
-    printf("Usage: %s [options]\n", prog);
-    printf("Options:\n");
-    printf("  -d <device>      IB device name (required)\n");
+    printf("Usage: %s [options]\n", prog_name);
+    printf("\nOptions:\n");
+    printf("  -d <device>      IB device name (default: first available)\n");
     printf("  -l <min_size>    Minimum message size in bytes (default: 1024)\n");
-    printf("  -u <max_size>    Maximum message size in bytes (default: 1073741824)\n");
+    printf("  -u <max_size>    Maximum message size in bytes (default: 1048576)\n");
     printf("  -w <warmup>      Number of warmup iterations (default: 10)\n");
     printf("  -i <iterations>  Number of test iterations (default: 100)\n");
     printf("  -s <step>        Size step multiplier (default: 2)\n");
+    printf("  -m <mem_type>    Memory type: host or cuda (default: host)\n");
     printf("  -h               Show this help\n");
     printf("\nEnvironment Variables:\n");
-    printf("  LOG_LEVEL        Set logging level (ERROR/0, INFO/1, DEBUG/2, default: INFO)\n");
-    printf("\nNote: This program requires exactly 2 MPI ranks (sender and receiver)\n");
+    printf("  LOG_LEVEL        Set log level (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG)\n");
+    printf("\nExamples:\n");
+    printf("  %s -d mlx5_0 -l 1024 -u 1048576 -w 5 -i 50\n", prog_name);
+    printf("  %s -d mlx5_0 -m cuda -l 8192 -u 8192\n", prog_name);
 }
 
 static void cleanup_ib_context(ib_context_t *ctx)
@@ -794,9 +812,10 @@ int main(int argc, char *argv[])
     perf_params_t perf_params = {
         .warmup_iterations = 10,
         .test_iterations = 100,
-        .size_step = 2,
         .min_size = 1024,
-        .max_size = 32 * 1024 * 1024
+        .max_size = 1048576,
+        .size_step = 2,
+        .mem_type = MEM_TYPE_HOST  // Default to host memory
     };
 
     // Initialize MPI
@@ -804,36 +823,17 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
 
-    // Check if we have exactly 2 ranks
-    if (mpi_size != 2) {
-        if (mpi_rank == 0) {
-            fprintf(stderr, "Error: This program requires exactly 2 MPI ranks (sender and receiver)\n");
-            fprintf(stderr, "Current number of ranks: %d\n", mpi_size);
-        }
-        MPI_Finalize();
-        return 1;
-    }
-
-    // set log level
+    // Set log level from environment variable
     log_level_env = getenv("LOG_LEVEL");
-    if (log_level_env != NULL) {
-        if (strcmp(log_level_env, "ERROR") == 0 || strcmp(log_level_env, "0") == 0) {
-            g_log_level = LOG_LEVEL_ERROR;
-        } else if (strcmp(log_level_env, "INFO") == 0 || strcmp(log_level_env, "1") == 0) {
-            g_log_level = LOG_LEVEL_INFO;
-        } else if (strcmp(log_level_env, "DEBUG") == 0 || strcmp(log_level_env, "2") == 0) {
-            g_log_level = LOG_LEVEL_DEBUG;
-        } else {
-            LOG_ERROR("Invalid LOG_LEVEL value: %s. Using default (INFO)", log_level_env);
-            LOG_ERROR("Valid values: ERROR(0), INFO(1), DEBUG(2)");
-        }
+    if (log_level_env) {
+        g_log_level = atoi(log_level_env);
     }
 
-    LOG_INFO("Starting IB unicast performance test:");
-    LOG_DEBUG("Log level: %d", g_log_level);
+    LOG_INFO("Starting IB unicast performance test: %s", argv[0]);
+    LOG_INFO("Log level: %d", g_log_level);
 
     // Parse command line arguments
-    while ((opt = getopt(argc, argv, "d:l:u:w:i:s:h")) != -1) {
+    while ((opt = getopt(argc, argv, "d:l:u:w:i:s:m:h")) != -1) {
         switch (opt) {
         case 'd':
             dev_name = optarg;
@@ -853,30 +853,37 @@ int main(int argc, char *argv[])
         case 's':
             perf_params.size_step = atoi(optarg);
             break;
+        case 'm':
+            if (strcmp(optarg, "host") == 0) {
+                perf_params.mem_type = MEM_TYPE_HOST;
+            } else if (strcmp(optarg, "cuda") == 0) {
+                perf_params.mem_type = MEM_TYPE_CUDA;
+            } else {
+                LOG_ERROR("Invalid memory type: %s. Use 'host' or 'cuda'", optarg);
+                if (mpi_rank == 0) {
+                    print_usage(argv[0]);
+                }
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+            break;
         case 'h':
-            print_usage(argv[0]);
+            if (mpi_rank == 0) {
+                print_usage(argv[0]);
+            }
             MPI_Finalize();
             return 0;
         default:
-            print_usage(argv[0]);
-            MPI_Finalize();
-            return 1;
+            if (mpi_rank == 0) {
+                print_usage(argv[0]);
+            }
+            MPI_Abort(MPI_COMM_WORLD, 1);
         }
-    }
-
-    // Check if device name is specified
-    if (!dev_name) {
-        if (mpi_rank == 0) {
-            fprintf(stderr, "Error: Device name (-d) is required\n");
-            print_usage(argv[0]);
-        }
-        MPI_Finalize();
-        return 1;
     }
 
     if (mpi_rank == 0) {
         LOG_INFO("Test sizes: %d to %d bytes (step: %dx)", perf_params.min_size, perf_params.max_size, perf_params.size_step);
         LOG_INFO("Warmup iterations: %d, Test iterations: %d", perf_params.warmup_iterations, perf_params.test_iterations);
+        LOG_INFO("Memory type: %s", mem_type_to_str(perf_params.mem_type));
         LOG_INFO("Rank 0: Sender, Rank 1: Receiver");
     }
 

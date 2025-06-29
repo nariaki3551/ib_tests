@@ -16,8 +16,9 @@
 #include <dirent.h>
 #include <time.h>
 #include <sys/time.h>
+#include <cuda_runtime.h>
 
-#define BUFFER_SIZE 1073741824
+#define BUFFER_SIZE 32 * 1024 * 1024
 #define MAX_QP_WR 16384
 #define DEF_QKEY 0x1a1a1a1a
 #define GRH_HEADER_SIZE 40  // Global Routing Header size
@@ -28,6 +29,12 @@ typedef struct {
     uint32_t qpn;
     union ibv_gid gid;
 } peer_info_t;
+
+// Memory type enumeration
+typedef enum {
+    MEM_TYPE_HOST = 0,
+    MEM_TYPE_CUDA = 1
+} mem_type_t;
 
 // IB context structure
 typedef struct {
@@ -49,13 +56,8 @@ typedef struct {
     struct ibv_recv_wr *recv_wrs;
     struct ibv_sge *send_sges;
     struct ibv_sge *recv_sges;
+    mem_type_t mem_type;
 } ib_context_t;
-
-// Memory type enumeration
-typedef enum {
-    MEM_TYPE_HOST = 0,
-    MEM_TYPE_CUDA = 1
-} mem_type_t;
 
 // performance parameters structure
 typedef struct {
@@ -64,7 +66,6 @@ typedef struct {
     int min_size;
     int max_size;
     int size_step;
-    mem_type_t mem_type;
 } perf_params_t;
 
 // performance result structure
@@ -125,14 +126,14 @@ static void print_performance_header(perf_params_t *perf_params)
         printf("Test iterations: %d\n", perf_params->test_iterations);
         printf("MPI ranks: %d\n", mpi_size);
         printf("\n");
-        printf("%-20s %-16s %-16s %-16s %-16s\n", 
-               "Size (bytes)", "Send BW (GB/s)", "Recv BW (GB/s)", "Send Lat (us)", "Recv Lat (us)");
-        printf("-----------------------------------------------------------------------------------\n");
+        printf("%-10s %-20s %-16s %-16s %-16s %-16s\n", 
+               "Memory", "Size (bytes)", "Send BW (GB/s)", "Recv BW (GB/s)", "Send Lat (us)", "Recv Lat (us)");
+        printf("---------------------------------------------------------------------------------------------------\n");
     }
 }
 
 static void print_performance_result(int size, double send_bandwidth_gbps, double recv_bandwidth_gbps, 
-                                   double send_latency_usec, double recv_latency_usec)
+                                   double send_latency_usec, double recv_latency_usec, mem_type_t mem_type)
 {
     if (mpi_rank == 0) {
         char size_str[32];
@@ -146,7 +147,8 @@ static void print_performance_result(int size, double send_bandwidth_gbps, doubl
             snprintf(size_str, sizeof(size_str), "%d (%.0fG)", size, (double)size / (1024 * 1024 * 1024));
         }
         
-        printf("%-20s %-16.4f %-16.4f %-16.2f %-16.2f\n", 
+        printf("%-10s %-20s %-16.4f %-16.4f %-16.2f %-16.2f\n", 
+               mem_type_to_str(mem_type),
                size_str, send_bandwidth_gbps, recv_bandwidth_gbps, send_latency_usec, recv_latency_usec);
     }
 }
@@ -166,11 +168,6 @@ static int allocate_wrs_and_sges(ib_context_t *ctx, perf_params_t *perf_params)
         return -1;
     }
     
-    // Initialize buffer with test data (only for sender rank)
-    if (mpi_rank == 0) {
-        memset(ctx->buf, TEST_DATA_VALUE, perf_params->max_size);
-    }
-    
     LOG_DEBUG("Allocated WRs and SGEs for max %d chunks", max_num_chunks);
     return 0;
 }
@@ -184,7 +181,7 @@ static perf_result_t run_performance_test(ib_context_t *ctx, peer_info_t *peer, 
     perf_result_t result = {0.0, 0.0};
 
     // Warmup phase
-    LOG_INFO("Warmup phase: %s", mem_type_to_str(perf_params->mem_type));
+    LOG_INFO("Warmup phase: %s", mem_type_to_str(ctx->mem_type));
     for (int i = 0; i < perf_params->warmup_iterations; i++) {
         LOG_INFO("Warmup iteration start [%d/%d]", i+1, perf_params->warmup_iterations);
         if (mpi_rank > 0) {
@@ -198,12 +195,16 @@ static perf_result_t run_performance_test(ib_context_t *ctx, peer_info_t *peer, 
         } else {
             wait_for_completion(ctx, num_chunks);
             verify_received_data(ctx, size);
-            memset(ctx->buf, 0, size);
+            if (ctx->mem_type == MEM_TYPE_HOST) {
+                memset(ctx->buf, 0, size);
+            } else { // MEM_TYPE_CUDA
+                cudaMemset(ctx->buf, 0, size);
+            }
         }
     }
 
     // Measurement phase
-    LOG_INFO("Measurement phase: %s", mem_type_to_str(perf_params->mem_type));
+    LOG_INFO("Measurement phase: %s", mem_type_to_str(ctx->mem_type));
     for (int i = 0; i < perf_params->test_iterations; i++) {
         LOG_INFO("Measurement iteration start [%d/%d]", i+1, perf_params->test_iterations);
         if (mpi_rank > 0) {
@@ -249,11 +250,11 @@ static void run_performance_suite(ib_context_t *ctx, peer_info_t *peer, perf_par
         send_bandwidth_gbps = (double_size * 1000000) / (result.send_time_usec * 1024 * 1024 * 1024);
         recv_bandwidth_gbps = (double_size * 1000000) / (result.recv_time_usec * 1024 * 1024 * 1024);
         
-        print_performance_result(size, send_bandwidth_gbps, recv_bandwidth_gbps, result.send_time_usec, result.recv_time_usec);
+        print_performance_result(size, send_bandwidth_gbps, recv_bandwidth_gbps, result.send_time_usec, result.recv_time_usec, ctx->mem_type);
     }
     
     if (mpi_rank == 0) {
-        printf("-----------------------------------------------------------------------------------\n");
+        printf("---------------------------------------------------------------------------------------------------\n");
         printf("Performance test completed\n");
     }
 }
@@ -269,12 +270,13 @@ static void print_usage(const char *prog_name)
     printf("  -i <iterations>  Number of test iterations (default: 100)\n");
     printf("  -s <step>        Size step multiplier (default: 2)\n");
     printf("  -m <mem_type>    Memory type: host or cuda (default: host)\n");
+    printf("  -g <gpu_id>      CUDA GPU device ID (default: 0)\n");
     printf("  -h               Show this help\n");
     printf("\nEnvironment Variables:\n");
     printf("  LOG_LEVEL        Set log level (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG)\n");
     printf("\nExamples:\n");
     printf("  %s -d mlx5_0 -l 1024 -u 1048576 -w 5 -i 50\n", prog_name);
-    printf("  %s -d mlx5_0 -m cuda -l 8192 -u 8192\n", prog_name);
+    printf("  %s -d mlx5_0 -m cuda -g 1 -l 8192 -u 8192\n", prog_name);
 }
 
 static void cleanup_ib_context(ib_context_t *ctx)
@@ -286,7 +288,12 @@ static void cleanup_ib_context(ib_context_t *ctx)
     if (ctx->grh_buf_mr) ibv_dereg_mr(ctx->grh_buf_mr);
     if (ctx->mr) ibv_dereg_mr(ctx->mr);
     if (ctx->grh_buf) free(ctx->grh_buf);
-    if (ctx->buf) free(ctx->buf);
+    if (ctx->buf) {
+        cudaError_t cuda_ret = cudaFree(ctx->buf);
+        if (cuda_ret != cudaSuccess) {
+            free(ctx->buf);
+        }
+    }
     if (ctx->cq) ibv_destroy_cq(ctx->cq);
     if (ctx->pd) ibv_dealloc_pd(ctx->pd);
     if (ctx->dev) ibv_close_device(ctx->dev);
@@ -329,7 +336,7 @@ static int get_ib_device(const char *dev_name, struct ibv_device **dev)
     return 0;
 }
 
-static int init_ib_context(ib_context_t *ctx, const char *dev_name)
+static int init_ib_context(ib_context_t *ctx, const char *dev_name, mem_type_t mem_type)
 {
     struct ibv_device *dev;
     struct ibv_port_attr port_attr;
@@ -413,10 +420,19 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
         goto error;
     }
 
-    ctx->buf = malloc(BUFFER_SIZE);
-    if (!ctx->buf) {
-        LOG_ERROR("Failed to allocate buffer");
-        goto error;
+    if (mem_type == MEM_TYPE_HOST) {
+        ctx->buf = malloc(BUFFER_SIZE);
+        if (!ctx->buf) {
+            LOG_ERROR("Failed to allocate host buffer: %s", strerror(errno));
+            ret = -1;
+            goto error;
+        }
+    } else { // MEM_TYPE_CUDA
+        ret = cudaMalloc((void**)&ctx->buf, BUFFER_SIZE);
+        if (ret != cudaSuccess) {
+            LOG_ERROR("Failed to allocate buffer: %s", cudaGetErrorString(ret));
+            goto error;
+        }
     }
 
     // Allocate buffer for GRH
@@ -451,6 +467,7 @@ static int init_ib_context(ib_context_t *ctx, const char *dev_name)
     LOG_DEBUG("        PKey table size: %d", port_attr.pkey_tbl_len);
     LOG_DEBUG("        max_srq_sge: %d", device_attr.max_srq_sge);
 
+    ctx->mem_type = mem_type;
     return 0;
 
 error:
@@ -755,11 +772,23 @@ static int verify_received_data(ib_context_t *ctx, int size)
     LOG_DEBUG("Verifying received data (size: %d bytes)", size);
     
     for (i = 0; i < size; i++) {
-        if (data[i] != TEST_DATA_VALUE) {
-            error_count++;
-            if (error_count <= MAX_ERRORS_TO_REPORT) {
-                LOG_ERROR("Data mismatch at position %d: expected %d, got %d", i, TEST_DATA_VALUE, (int)data[i]);
+        if (ctx->mem_type == MEM_TYPE_HOST) {
+            if (data[i] != TEST_DATA_VALUE) {
+                error_count++;
+                if (error_count <= MAX_ERRORS_TO_REPORT) {
+                    LOG_ERROR("Data mismatch at position %d: expected %d, got %d", i, TEST_DATA_VALUE, (int)data[i]);
+                }
             }
+        } else { // MEM_TYPE_CUDA
+            void *tmp_buf = malloc(size);
+            cudaMemcpy(tmp_buf, data, size, cudaMemcpyDeviceToHost);
+            if (((char*)tmp_buf)[i] != TEST_DATA_VALUE) {
+                error_count++;
+                if (error_count <= MAX_ERRORS_TO_REPORT) {
+                    LOG_ERROR("Data mismatch at position %d: expected %d, got %d", i, TEST_DATA_VALUE, ((char*)tmp_buf)[i]);
+                }
+            }
+            free(tmp_buf);
         }
     }
     
@@ -809,13 +838,13 @@ int main(int argc, char *argv[])
     peer_info_t peer = {0};
     int ret;
     char *log_level_env;
+    int gpu_id = 0;  // Default GPU ID
     perf_params_t perf_params = {
         .warmup_iterations = 10,
         .test_iterations = 100,
         .min_size = 1024,
         .max_size = 1048576,
         .size_step = 2,
-        .mem_type = MEM_TYPE_HOST  // Default to host memory
     };
 
     // Initialize MPI
@@ -833,7 +862,7 @@ int main(int argc, char *argv[])
     LOG_INFO("Log level: %d", g_log_level);
 
     // Parse command line arguments
-    while ((opt = getopt(argc, argv, "d:l:u:w:i:s:m:h")) != -1) {
+    while ((opt = getopt(argc, argv, "d:l:u:w:i:s:m:g:h")) != -1) {
         switch (opt) {
         case 'd':
             dev_name = optarg;
@@ -855,9 +884,9 @@ int main(int argc, char *argv[])
             break;
         case 'm':
             if (strcmp(optarg, "host") == 0) {
-                perf_params.mem_type = MEM_TYPE_HOST;
+                ctx.mem_type = MEM_TYPE_HOST;
             } else if (strcmp(optarg, "cuda") == 0) {
-                perf_params.mem_type = MEM_TYPE_CUDA;
+                ctx.mem_type = MEM_TYPE_CUDA;
             } else {
                 LOG_ERROR("Invalid memory type: %s. Use 'host' or 'cuda'", optarg);
                 if (mpi_rank == 0) {
@@ -865,6 +894,9 @@ int main(int argc, char *argv[])
                 }
                 MPI_Abort(MPI_COMM_WORLD, 1);
             }
+            break;
+        case 'g':
+            gpu_id = atoi(optarg);
             break;
         case 'h':
             if (mpi_rank == 0) {
@@ -883,12 +915,22 @@ int main(int argc, char *argv[])
     if (mpi_rank == 0) {
         LOG_INFO("Test sizes: %d to %d bytes (step: %dx)", perf_params.min_size, perf_params.max_size, perf_params.size_step);
         LOG_INFO("Warmup iterations: %d, Test iterations: %d", perf_params.warmup_iterations, perf_params.test_iterations);
-        LOG_INFO("Memory type: %s", mem_type_to_str(perf_params.mem_type));
+        LOG_INFO("Memory type: %s", mem_type_to_str(ctx.mem_type));
         LOG_INFO("Rank 0: Sender, Rank 1: Receiver");
     }
 
+    // Set CUDA device
+    if (ctx.mem_type == MEM_TYPE_CUDA) {
+        LOG_INFO("Set CUDA device to %d", gpu_id);
+        ret = cudaSetDevice(gpu_id);
+        if (ret != cudaSuccess) {
+            LOG_ERROR("Failed to set CUDA device %d: %s", gpu_id, cudaGetErrorString(ret));
+            goto cleanup;
+        }
+    }
+
     // Initialize IB context
-    ret = init_ib_context(&ctx, dev_name);
+    ret = init_ib_context(&ctx, dev_name, ctx.mem_type);
     if (ret < 0) {
         LOG_ERROR("Failed to initialize IB context");
         goto cleanup;
@@ -927,6 +969,17 @@ int main(int argc, char *argv[])
     if (ret < 0) {
         LOG_ERROR("Failed to allocate work requests and sges");
         goto cleanup;
+    }
+
+    // Initialize buffer with test data (only for sender rank)
+    if (ctx.mem_type == MEM_TYPE_HOST) {
+        if (mpi_rank == 0) {
+            memset(ctx.buf, TEST_DATA_VALUE, perf_params.max_size);
+        }
+    } else { // MEM_TYPE_CUDA
+        if (mpi_rank == 0) {
+            cudaMemset(ctx.buf, TEST_DATA_VALUE, perf_params.max_size);
+        }
     }
 
     LOG_DEBUG("Successfully initialized UD QP for unicast");

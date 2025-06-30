@@ -52,29 +52,29 @@ perf-cuda: run-mcast-cuda run-ud_unicast-cuda run-rc_unicast-cuda
 # ------------------------------------------------------------------------------------------------------------------------------------
 run-mcast-host: ib_perf_multicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -w 20 -i 100 -m host -l 1024 -u 33554432 \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host -l 1024 -u 33554432 \
-	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
-	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host -l 1024 -u 33554432 \
-	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
-	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host -l 1024 -u 33554432 \
-	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m host -l 1024 -u 33554432 \
-	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -w 0 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 0 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 0 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 0 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m host -l 1024 -u 33554432 \
+	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 0 -i 100 -m host -l 1024 -u 33554432 \
 
 run-mcast-cuda: ib_perf_multicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -w 20 -i 100 -m cuda -g 2 -l 1024 -u 33554432 \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 3 -l 1024 -u 33554432 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
-	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
-	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
-	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
-	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
-	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
-	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 20 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -w 0 -i 100 -m cuda -g 2 -l 1024 -u 33554432 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m cuda -g 3 -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 0 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
+	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
+	: -n 1 --host snail03:1 $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 0 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
+	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
+	: -n 1 --host tvm01:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 0 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
+	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -w 0 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
+	: -n 1 --host tvm02:1   $(FLAGS) -- /app/ib_tests/ib_perf_multicast -d mlx5_2 -w 0 -i 100 -m cuda -g 1 -l 1024 -u 33554432 \
 
 test-mcast-host: ib_perf_multicast
 	mpirun \
@@ -84,12 +84,12 @@ test-mcast-host: ib_perf_multicast
 test-mcast-cuda: ib_perf_multicast
 	mpirun \
 	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -l 8192 -u 8192 -w 1 -i 2 -m cuda -g 2 \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -l 8192 -u 8192 -w 1 -i 2 -m cuda -g 3 \
+	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -l 8192 -u 8192 -w 1 -i 2 -m cuda -g 0 \
 
 test-mcast-cuda-perf: ib_perf_multicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- perf record -g /app/ib_tests/ib_perf_multicast -d mlx5_0 -l 8192 -u 8192 -w 1 -i 2 -m cuda -g 2 \
-	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_multicast -d mlx5_0 -l 8192 -u 8192 -w 1 -i 0 -m cuda -g 3 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- perf record -g --call-graph dwarf /app/ib_tests/ib_perf_multicast -d mlx5_0 -l 262144 -u 262144 -w 0 -i 100 -m cuda -g 2 \
+	: -n 1 --host snail02:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_multicast -d mlx5_1 -l 262144 -u 262144 -w 0 -i 100 -m cuda -g 0 \
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------
@@ -102,8 +102,8 @@ run-ud_unicast-host: ib_perf_ud_unicast
 
 run-ud_unicast-cuda: ib_perf_ud_unicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_0 -w 20 -i 100 -m cuda -g 2 -l 1024 -u 8192 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 8192 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_0 -w 0 -i 100 -m cuda -g 2 -l 1024 -u 8192 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_1 -w 0 -i 100 -m cuda -g 0 -l 1024 -u 8192 \
 
 test-ud_unicast-host: ib_perf_ud_unicast
 	mpirun \
@@ -112,7 +112,12 @@ test-ud_unicast-host: ib_perf_ud_unicast
 
 test-ud_unicast-cuda: ib_perf_ud_unicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_0 -l 128 -u 128 -w 1 -i 2 -m cuda -g 2 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_0 -l 64 -u 64 -w 1 -i 2 -m cuda -g 2 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_1 -l 64 -u 64 -w 1 -i 2 -m cuda -g 3 \
+
+test-ud_unicast-cuda-nsys: ib_perf_ud_unicast
+	mpirun \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- nsys profile -o ud_unicast_cuda_profile --stats=true /app/ib_tests/ib_perf_ud_unicast -d mlx5_0 -l 128 -u 128 -w 1 -i 2 -m cuda -g 2 \
 	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_ud_unicast -d mlx5_1 -l 128 -u 128 -w 1 -i 2 -m cuda -g 3 \
 
 # ------------------------------------------------------------------------------------------------------------------------------------
@@ -125,8 +130,8 @@ run-rc_unicast-host: ib_perf_rc_unicast
 
 run-rc_unicast-cuda: ib_perf_rc_unicast
 	mpirun \
-	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_0 -w 20 -i 100 -m cuda -g 2 -l 1024 -u 33554432 \
-	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_1 -w 20 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
+	: -n 1 --host snail01:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_0 -w 0 -i 100 -m cuda -g 2 -l 1024 -u 33554432 \
+	: -n 1 --host snail02:1 $(FLAGS) -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_1 -w 0 -i 100 -m cuda -g 0 -l 1024 -u 33554432 \
 
 test-rc_unicast-host: ib_perf_rc_unicast
 	mpirun \
@@ -136,6 +141,11 @@ test-rc_unicast-host: ib_perf_rc_unicast
 test-rc_unicast-cuda: ib_perf_rc_unicast
 	mpirun \
 	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_0 -l 8192 -u 8192 -w 1 -i 2 -m cuda -g 2 \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_1 -l 8192 -u 8192 -w 1 -i 2 -m cuda -g 3 \
+
+test-rc_unicast-cuda-nsys: ib_perf_rc_unicast
+	mpirun \
+	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- nsys profile -o rc_unicast_cuda_profile --stats=true /app/ib_tests/ib_perf_rc_unicast -d mlx5_0 -l 8192 -u 8192 -w 1 -i 2 -m cuda -g 2 \
 	: -n 1 --host snail01:1 $(FLAGS) -x LOG_LEVEL=2 -- /app/ib_tests/ib_perf_rc_unicast -d mlx5_1 -l 8192 -u 8192 -w 1 -i 2 -m cuda -g 3 \
 
 # ------------------------------------------------------------------------------------------------------------------------------------
@@ -153,6 +163,9 @@ help:
 	@echo "  run-ud_unicast-host-quick - Run quick UD unicast performance test"
 	@echo "  run-rc_unicast-host       - Run RC unicast performance test"
 	@echo "  run-rc_unicast-host-quick - Run quick RC unicast performance test"
+	@echo "  test-mcast-cuda-nsys      - Run multicast test with nsys profiling"
+	@echo "  test-ud_unicast-cuda-nsys - Run UD unicast test with nsys profiling"
+	@echo "  test-rc_unicast-cuda-nsys - Run RC unicast test with nsys profiling"
 	@echo "  clean                     - Clean build artifacts"
 	@echo "  help                      - Show this help"
 
@@ -163,4 +176,4 @@ clean:
 # Flags for multi-host execution
 FLAGS = --mca plm_rsh_args "-p 12345"
 
-.PHONY: all clean perf-host perf-cuda test-host test-cuda help
+.PHONY: all clean perf-host perf-cuda test-host test-cuda help test-mcast-cuda-nsys test-ud_unicast-cuda-nsys test-rc_unicast-cuda-nsys

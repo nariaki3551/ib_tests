@@ -201,6 +201,12 @@ static perf_result_t run_performance_test(ib_context_t *ctx, int size, perf_para
                 memset(ctx->buf, 0, size);
             } else { // MEM_TYPE_CUDA
                 cudaMemset(ctx->buf, 0, size);
+                // Ensure CUDA operation completion
+                cudaError_t cuda_ret = cudaDeviceSynchronize();
+                if (cuda_ret != cudaSuccess) {
+                    LOG_ERROR("Failed to synchronize CUDA device: %s", cudaGetErrorString(cuda_ret));
+                    return (perf_result_t){-1.0, -1.0};
+                }
             }
         }
     }
@@ -991,6 +997,13 @@ static int verify_received_data(ib_context_t *ctx, int size)
         } else { // MEM_TYPE_CUDA
             void *tmp_buf = malloc(size);
             cudaMemcpy(tmp_buf, data, size, cudaMemcpyDeviceToHost);
+            // Ensure CUDA memory copy completion
+            cudaError_t cuda_ret = cudaDeviceSynchronize();
+            if (cuda_ret != cudaSuccess) {
+                LOG_ERROR("Failed to synchronize CUDA device during verification: %s", cudaGetErrorString(cuda_ret));
+                free(tmp_buf);
+                return -1;
+            }
             if (((char*)tmp_buf)[i] != TEST_DATA_VALUE) {
                 error_count++;
                 if (error_count <= MAX_ERRORS_TO_REPORT) {
@@ -1230,6 +1243,12 @@ int main(int argc, char *argv[])
     } else { // MEM_TYPE_CUDA
         if (mpi_rank == 0) {
             cudaMemset(ctx.buf, TEST_DATA_VALUE, perf_params.max_size);
+            // Ensure CUDA operation completion
+            cudaError_t cuda_ret = cudaDeviceSynchronize();
+            if (cuda_ret != cudaSuccess) {
+                LOG_ERROR("Failed to synchronize CUDA device: %s", cudaGetErrorString(cuda_ret));
+                goto cleanup;
+            }
         }
     }
 

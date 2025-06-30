@@ -115,9 +115,7 @@ static log_level_t g_log_level = LOG_LEVEL_ERROR;
 // Performance measurement functions
 static double get_time_usec(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec * 1000000.0 + (double)tv.tv_usec;
+    return MPI_Wtime() * 1000000.0;  // Convert seconds to microseconds
 }
 
 // Forward declarations for functions used in run_performance_test

@@ -17,6 +17,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <cuda_runtime.h>
+#include <getopt.h>
 
 #define BUFFER_SIZE 32 * 1024 * 1024
 #define MAX_QP_WR 16384
@@ -35,6 +36,14 @@ typedef enum {
     MEM_TYPE_HOST = 0,
     MEM_TYPE_CUDA = 1
 } mem_type_t;
+
+typedef union packed_chunk_id {
+    struct {
+        uint32_t task_id  : 8;
+        uint32_t chunk_id : 24;
+    } chunk_metadata;
+    uint32_t imm_data;
+} packed_chunk_id_t;
 
 // IB context structure
 typedef struct {
@@ -57,6 +66,7 @@ typedef struct {
     struct ibv_sge *send_sges;
     struct ibv_sge *recv_sges;
     mem_type_t mem_type;
+    int with_imm;  // Flag to enable immediate data
 } ib_context_t;
 
 // performance parameters structure
@@ -96,11 +106,11 @@ typedef enum {
 static log_level_t g_log_level = LOG_LEVEL_ERROR;
 
 #define LOG_ERROR(fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_ERROR) fprintf(stderr, "\033[31mRank %d: " fmt " [%s:%s:%d]\033[0m\n", mpi_rank, ##__VA_ARGS__, __FILE__, __func__, __LINE__); } while (0)
+    do { if (g_log_level >= LOG_LEVEL_ERROR) fprintf(stderr, "\033[31mRank %d: " fmt " [%s:%d]\033[0m\n", mpi_rank, ##__VA_ARGS__, __FILE__, __LINE__); } while (0)
 #define LOG_INFO(fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_INFO) fprintf(stderr, "\033[36mRank %d: " fmt " [%s:%s:%d]\033[0m\n", mpi_rank, ##__VA_ARGS__, __FILE__,__func__, __LINE__); } while (0)
+    do { if (g_log_level >= LOG_LEVEL_INFO) fprintf(stderr, "\033[36mRank %d: " fmt " [%s:%d]\033[0m\n", mpi_rank, ##__VA_ARGS__, __FILE__, __LINE__); } while (0)
 #define LOG_DEBUG(fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_DEBUG) fprintf(stderr, "Rank %d: " fmt " [%s:%s:%d]\n", mpi_rank, ##__VA_ARGS__, __FILE__,__func__, __LINE__); } while (0)
+    do { if (g_log_level >= LOG_LEVEL_DEBUG) fprintf(stderr, "Rank %d: " fmt " [%s:%d]\n", mpi_rank, ##__VA_ARGS__, __FILE__, __LINE__); } while (0)
 
 // Performance measurement functions
 static double get_time_usec(void)
@@ -277,12 +287,13 @@ static void print_usage(const char *prog_name)
     printf("  -s <step>        Size step multiplier (default: 2)\n");
     printf("  -m <mem_type>    Memory type: host or cuda (default: host)\n");
     printf("  -g <gpu_id>      CUDA GPU device ID (default: 0)\n");
+    printf("  --with-imm       Enable immediate data in send operations\n");
     printf("  -h               Show this help\n");
     printf("\nEnvironment Variables:\n");
     printf("  LOG_LEVEL        Set log level (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG)\n");
     printf("\nExamples:\n");
     printf("  %s -d mlx5_0 -l 1024 -u 1048576 -w 5 -i 50\n", prog_name);
-    printf("  %s -d mlx5_0 -m cuda -g 1 -l 8192 -u 8192\n", prog_name);
+    printf("  %s -d mlx5_0 -m cuda -g 1 -l 8192 -u 8192 --with-imm\n", prog_name);
 }
 
 static void cleanup_ib_context(ib_context_t *ctx)
@@ -677,9 +688,9 @@ static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chun
     int chunk_size = ctx->mtu - GRH_HEADER_SIZE;
     int ret = 0;
     
-    LOG_DEBUG("Sending %d bytes in %d chunks (chunk_size=%d)", 
-           len, num_chunks, chunk_size);
-    
+    LOG_DEBUG("Sending %d bytes in %d chunks (chunk_size=%d, with_imm=%d)", 
+           len, num_chunks, chunk_size, ctx->with_imm);
+   
     int remaining = len;
     for (int i = 0; i < num_chunks; i++) {
         int data_offset = i * chunk_size;
@@ -694,13 +705,23 @@ static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chun
         // Set WR
         memset(&wrs[i], 0, sizeof(struct ibv_send_wr));
         wrs[i].wr_id = 2 + i; // Unique WR ID
-        wrs[i].opcode = IBV_WR_SEND;
+        wrs[i].opcode = ctx->with_imm ? IBV_WR_SEND_WITH_IMM : IBV_WR_SEND;
         wrs[i].send_flags = (i == num_chunks - 1) ? IBV_SEND_SIGNALED : 0;
         wrs[i].sg_list = &sges[i];
         wrs[i].num_sge = 1;
         wrs[i].wr.ud.remote_qpn = peer->qpn;
         wrs[i].wr.ud.remote_qkey = DEF_QKEY;
         wrs[i].wr.ud.ah = ctx->ah;
+        
+        // Set immediate data if enabled
+        if (ctx->with_imm) {
+            packed_chunk_id_t chunk_info;
+            chunk_info.chunk_metadata.task_id = mpi_rank;
+            chunk_info.chunk_metadata.chunk_id = i;
+            wrs[i].imm_data = chunk_info.imm_data;
+            LOG_DEBUG("Set immediate data: task_id=%d, chunk_id=%d, imm_data=0x%x", 
+                   chunk_info.chunk_metadata.task_id, chunk_info.chunk_metadata.chunk_id, wrs[i].imm_data);
+        }
         
         // Link to next WR
         if (i < num_chunks - 1) {
@@ -714,11 +735,12 @@ static int post_send(ib_context_t *ctx, peer_info_t *peer, int len, int num_chun
     // Post batch send
     ret = ibv_post_send(ctx->qp, wrs, &bad_wr);
     if (ret) {
-        LOG_ERROR("Failed to post batch send: %s (errno=%d)", strerror(errno), errno);
+        LOG_ERROR("Failed to post batch send: %s (errno=%d)", 
+               strerror(errno), errno);
         return ret;
     }
     LOG_DEBUG("Batch send posted successfully (%d chunks; wr_ids %lu-%lu)", num_chunks, wrs[0].wr_id, wrs[num_chunks-1].wr_id);
-
+    
     return ret;
 }
 
@@ -759,6 +781,14 @@ static int wait_for_completion(ib_context_t *ctx, int expected_wrs)
         if (wc.status != IBV_WC_SUCCESS) {
             LOG_ERROR("WC error: %s", ibv_wc_status_str(wc.status));
             return 1;
+        }
+        
+        // Log immediate data if present
+        if (ctx->with_imm && wc.imm_data != 0) {
+            packed_chunk_id_t chunk_info;
+            chunk_info.imm_data = wc.imm_data;
+            LOG_DEBUG("Received immediate data: task_id=%d, chunk_id=%d, imm_data=0x%x", 
+                   chunk_info.chunk_metadata.task_id, chunk_info.chunk_metadata.chunk_id, wc.imm_data);
         }
         
         completed_wrs++;
@@ -860,6 +890,12 @@ int main(int argc, char *argv[])
         .size_step = 2,
     };
 
+    // Define long options
+    static struct option long_options[] = {
+        {"with-imm", no_argument, 0, 'I'},
+        {0, 0, 0, 0}
+    };
+
     // Initialize MPI
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
@@ -875,7 +911,7 @@ int main(int argc, char *argv[])
     LOG_INFO("Log level: %d", g_log_level);
 
     // Parse command line arguments
-    while ((opt = getopt(argc, argv, "d:l:u:w:i:s:m:g:h")) != -1) {
+    while ((opt = getopt_long(argc, argv, "d:l:u:w:i:s:m:g:hI", long_options, NULL)) != -1) {
         switch (opt) {
         case 'd':
             dev_name = optarg;
@@ -910,6 +946,10 @@ int main(int argc, char *argv[])
             break;
         case 'g':
             gpu_id = atoi(optarg);
+            break;
+        case 'I':  // --with-imm
+            ctx.with_imm = 1;
+            LOG_INFO("Immediate data enabled");
             break;
         case 'h':
             if (mpi_rank == 0) {
